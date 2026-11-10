@@ -1,22 +1,24 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.terrain.visibility;
 
 import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
+import org.joml.Vector3d;
 
 /**
  * Vanilla's line-of-sight probe for sections far from the camera, without its per-step
  * allocations.
  *
- * <p>Vanilla's visibility walk admits a neighbour more than 60 blocks from the camera only if
- * a ray from the neighbour's near corner toward the camera passes exclusively through
- * sections that exist and are already in the visible graph. It advances the ray in fixed
- * steps and, per step, allocates a Vec3d for the remaining offset, a Vec3d for the advanced
- * point and a BlockPos for the lookup. This reproduces the same arithmetic in the same order
- * on doubles, so the probed positions and the verdict are bit-identical to vanilla's.
+ * <p>The 26.2 walk probes from the current section's corner, using JOML's normalization and
+ * distance operations. Reusing the two vectors preserves that arithmetic, including JOML's
+ * fused operations, without allocating for each neighbour. One instance belongs to each
+ * visibility graph, so a background full walk never shares scratch with partial updates.
  */
 public final class FarChunkProbe {
 
@@ -28,25 +30,23 @@ public final class FarChunkProbe {
 
     /** Squared distance at which the ray is close enough to the camera to stop. */
     private static final double NEAR_CAMERA_DISTANCE_SQUARED = 3600.0;
-    /** Below this length vanilla's {@code Vec3d.normalize} yields the zero vector. */
-    private static final double NORMALIZE_EPSILON = 1.0E-4;
-
-    private FarChunkProbe() {}
+    private final Vector3d point = new Vector3d();
+    private final Vector3d advance = new Vector3d();
 
     /**
-     * Runs the probe from the neighbour section at {@code origin} entered through a face on
+     * Runs the probe from the current section at {@code origin} toward its neighbour on
      * {@code axis}, toward the camera at ({@code cameraX}, {@code cameraY}, {@code cameraZ}).
      *
      * @param cameraSectionCenterX camera section origin plus eight, per axis; picks the corner
-     *                             of the neighbour the ray starts from
+     *                             of the current section the ray starts from
      * @param step                 ray advance per iteration in blocks
-     * @param worldTopYExclusive   one past the highest block, as {@code HeightLimitView.getTopY()}
-     *                             returns it (320 for the overworld); a point above it or below
+     * @param worldTopYExclusive   one past the highest block (320 for the overworld);
+     *                             a point above it or below
      *                             {@code worldBottomY} leaves the world, which passes
      * @param worldBottomY         inclusive bottom of the world
      * @return true when every probed section is in the graph or the ray left the world
      */
-    public static boolean reachesCamera(
+    public boolean reachesCamera(
             int originX, int originY, int originZ,
             Direction.Axis axis,
             int cameraSectionCenterX, int cameraSectionCenterY, int cameraSectionCenterZ,
@@ -64,37 +64,18 @@ public final class FarChunkProbe {
                 ? (cameraSectionCenterZ > originZ ? 16 : 0)
                 : (cameraSectionCenterZ < originZ ? 16 : 0));
 
-        double toCameraX = cameraX - pointX;
-        double toCameraY = cameraY - pointY;
-        double toCameraZ = cameraZ - pointZ;
-        double length = Math.sqrt(toCameraX * toCameraX + toCameraY * toCameraY + toCameraZ * toCameraZ);
-        double stepX = 0.0;
-        double stepY = 0.0;
-        double stepZ = 0.0;
-        if (!(length < NORMALIZE_EPSILON)) {
-            stepX = toCameraX / length * step;
-            stepY = toCameraY / length * step;
-            stepZ = toCameraZ / length * step;
-        }
-
-        while (true) {
-            double remainingX = cameraX - pointX;
-            double remainingY = cameraY - pointY;
-            double remainingZ = cameraZ - pointZ;
-            if (!(remainingX * remainingX + remainingY * remainingY + remainingZ * remainingZ
-                    > NEAR_CAMERA_DISTANCE_SQUARED)) {
-                return true;
-            }
-            pointX += stepX;
-            pointY += stepY;
-            pointZ += stepZ;
-            if (pointY > (double) worldTopYExclusive || pointY < (double) worldBottomY) {
+        point.set(pointX, pointY, pointZ);
+        advance.set(cameraX, cameraY, cameraZ).sub(point).normalize().mul(step);
+        while (point.distanceSquared(cameraX, cameraY, cameraZ) > NEAR_CAMERA_DISTANCE_SQUARED) {
+            point.add(advance);
+            if (point.y > worldTopYExclusive || point.y < worldBottomY) {
                 return true;
             }
             if (!graph.contains(
-                    Mth.floor(pointX), Mth.floor(pointY), Mth.floor(pointZ))) {
+                    Mth.floor(point.x), Mth.floor(point.y), Mth.floor(point.z))) {
                 return false;
             }
         }
+        return true;
     }
 }

@@ -19,6 +19,13 @@ public interface LevelExtractorAccess {
      */
     void rtxremix$setSectionNotDirty(long sectionNode);
 
+    /** Whether the resident section already awaits a vanilla rebuild. */
+    boolean rtxremix$isSectionDirty(long sectionNode);
+
+    int rtxremix$blockEntitySectionScans();
+
+    int rtxremix$blockEntitySectionCount();
+
     /**
      * Hands over the region cache this frame's extraction built, once, so its snapshots
      * can be released after {@code LevelRenderer.compileSections} has created its tasks.

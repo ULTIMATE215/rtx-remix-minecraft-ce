@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.texture;
 
@@ -50,9 +53,9 @@ public final class AtlasAnimationForwarder {
 
     private static Thread expectedThread;
     private static final List<PatchRecord> pendingPatches = new ArrayList<>();
-    private static final Map<Identifier, AnimationPlayback> animationStates = new HashMap<>();
-    private static Map<String, BlockTextureManager.AnimatedSpriteLabPBR> labPBRMap;
-    private static Set<Identifier> blockAtlasSpriteIds;
+    private static final Map<Identifier, Atlas> atlases = new HashMap<>();
+    private static Target blockTarget;
+    private static long generation;
     private static final ThreadLocal<Identifier> currentAtlasId = new ThreadLocal<>();
 
     // Reusable scratch between CPU-side patch composition and the final
@@ -63,200 +66,150 @@ public final class AtlasAnimationForwarder {
     private static final int kInitialScratchBytes = 64 * 64 * 4;
     private static byte[] scratch = new byte[kInitialScratchBytes];
 
-    private static final class PatchRecord {
+    private static final class Atlas {
         final Identifier id;
-        final int dstX;
-        final int dstY;
-        final int srcX;
-        final int srcY;
-        final int width;
-        final int height;
-        final int srcImageWidth;
-        final int srcImageHeight;
-        /**
-         * Raw pointer into the owning NativeImage's mip-0 backing memory.
-         * Read-only and valid only until flush() is called on the same
-         * render-thread frame that produced this record:
-         *   1. The owning SpriteContents must not be closed (atlas rebuild
-         *      or world unload invalidates).
-         *   2. The block atlas must not be re-stitched between capture
-         *      and flush. RemixRenderer clears the forwarder on
-         *      pendingTextureReload before rebuild to enforce this.
-         *   3. Capture and flush must both run on the render thread
-         *      (thread check in addPatch). Moving flush off the render
-         *      thread breaks this contract and requires copying bytes
-         *      at capture time.
-         */
-        final long pixelPtr;
-        final int rowPitch;
+        final Set<Identifier> sprites;
+        final Map<Identifier, PatchRecord> records = new HashMap<>();
+        final List<Target> targets = new ArrayList<>();
 
-        PatchRecord(Identifier id, int dstX, int dstY, int srcX, int srcY,
-                    int width, int height, int srcImageWidth, int srcImageHeight,
-                    long pixelPtr, int rowPitch) {
+        Atlas(Identifier id, Set<Identifier> sprites) {
             this.id = id;
-            this.dstX = dstX;
-            this.dstY = dstY;
-            this.srcX = srcX;
-            this.srcY = srcY;
-            this.width = width;
-            this.height = height;
-            this.srcImageWidth = srcImageWidth;
-            this.srcImageHeight = srcImageHeight;
-            this.pixelPtr = pixelPtr;
-            this.rowPitch = rowPitch;
-        }
-
-        boolean isInterpolatedUpload() {
-            return srcX == 0 && srcY == 0 &&
-                   srcImageWidth == width && srcImageHeight == height;
+            this.sprites = Set.copyOf(sprites);
         }
     }
 
-    private static final class FrameOrigin {
-        final int x;
-        final int y;
+    /** A texture owner's registration. Close it before destroying any of its native handles. */
+    public static final class Target implements AutoCloseable {
+        private final Atlas atlas;
+        private final Map<String, BlockTextureManager.AnimatedSpriteLabPBR> labPBR;
+        private long albedo, emissive, roughness, metallic, sss;
 
-        FrameOrigin(int x, int y) {
-            this.x = x;
-            this.y = y;
+        private Target(Atlas atlas, Map<String, BlockTextureManager.AnimatedSpriteLabPBR> labPBR,
+                       long albedo, long emissive, long roughness, long metallic, long sss) {
+            this.atlas = atlas;
+            this.labPBR = labPBR;
+            this.albedo = albedo;
+            this.emissive = emissive;
+            this.roughness = roughness;
+            this.metallic = metallic;
+            this.sss = sss;
+        }
+
+        @Override
+        public void close() {
+            if (!atlas.targets.remove(this)) return;
+            if (atlas.targets.isEmpty()) {
+                atlases.remove(atlas.id, atlas);
+                pendingPatches.removeIf(patch -> patch.atlas == atlas);
+                atlas.records.clear();
+            }
         }
     }
 
-    private static final class FrameSampling {
-        final FrameOrigin current;
-        final FrameOrigin next;
-        final float nextBlend;
+    /** One reusable record per atlas and sprite; repeated ticks replace its pending sample. */
+    private static final class PatchRecord {
+        final Atlas atlas;
+        final Identifier id;
+        final String resourceName;
+        int dstX, dstY, srcX, srcY, nextX, nextY, width, height, rowPitch;
+        float nextBlend;
+        long pixelPtr;
+        boolean queued;
 
-        FrameSampling(FrameOrigin current, FrameOrigin next, float nextBlend) {
-            this.current = current;
-            this.next = next;
-            this.nextBlend = nextBlend;
+        PatchRecord(Atlas atlas, Identifier id) {
+            this.atlas = atlas;
+            this.id = id;
+            resourceName = id.toString();
         }
     }
 
-    private static final class AnimationPlayback {
-        int sequenceIndex;
-        int interpolationTick;
-        boolean initialized;
+    /** Registers another native copy of an atlas, such as entity and particle item materials. */
+    public static Target register(Identifier atlasId, Set<Identifier> sprites,
+                                  Map<String, BlockTextureManager.AnimatedSpriteLabPBR> labPBR,
+                                  long albedo, long emissive, long roughness, long metallic, long sss) {
+        Atlas atlas = atlases.get(atlasId);
+        if (atlas == null) {
+            atlas = new Atlas(atlasId, sprites);
+            atlases.put(atlasId, atlas);
+        }
+        Target target = new Target(atlas, labPBR, albedo, emissive, roughness, metallic, sss);
+        atlas.targets.add(target);
+        generation++;
+        return target;
     }
 
-    public static void init(
-            Map<String, BlockTextureManager.AnimatedSpriteLabPBR> labPBR,
-            Set<Identifier> blockAtlasSprites) {
-        labPBRMap = labPBR;
-        blockAtlasSpriteIds = Set.copyOf(blockAtlasSprites);
-        pendingPatches.clear();
-        animationStates.clear();
+    /** Changes on reload or resume so a paused sprite rejoins vanilla's current frame. */
+    public static long generation() {
+        return generation;
+    }
+
+    public static boolean accepts(Identifier spriteId) {
+        Atlas atlas = atlases.get(currentAtlasId.get());
+        return active && atlas != null && atlas.sprites.contains(spriteId);
+    }
+
+    public static void init(Map<String, BlockTextureManager.AnimatedSpriteLabPBR> labPBR,
+                            Set<Identifier> blockAtlasSprites) {
+        if (blockTarget != null) blockTarget.close();
+        blockTarget = register(BlockTextureManager.BLOCK_ATLAS_ID, blockAtlasSprites,
+                labPBR, 0, 0, 0, 0, 0);
         expectedThread = null;
-        // Flip active on LAST so any addPatch probe that races initialization
-        // sees a fully constructed forwarder (or no forwarder at all).
         active = true;
-        LOGGER.info("AtlasAnimationForwarder initialized ({} LabPBR sprites, {} atlas sprites)",
-                    labPBR.size(), blockAtlasSpriteIds.size());
+        LOGGER.info("Atlas animation initialized ({} LabPBR sprites, {} block sprites)",
+                labPBR.size(), blockAtlasSprites.size());
     }
 
+    /**
+     * Queues the exact frame vanilla sampled. Pixels must remain live through flush on this
+     * render thread; another tick of the same sprite replaces both its pointer and sampling.
+     */
     public static void addPatch(Identifier spriteId, int dstX, int dstY,
-                                int srcX, int srcY, int width, int height,
-                                int srcImageWidth, int srcImageHeight,
-                                long pixelPtr, int rowPitch) {
-        // Drop patches when the forwarder is not active (SDK missing, RTX
-        // disabled, or post-shutdown/reload). Prevents an unbounded queue
-        // when SpriteContents.upload still fires but we'll never flush.
-        if (!active) return;
-
-        if (!BlockTextureManager.BLOCK_ATLAS_ID.equals(currentAtlasId.get())) {
-            return;
-        }
-
-        Set<Identifier> allowedSprites = blockAtlasSpriteIds;
-        if (allowedSprites == null || !allowedSprites.contains(spriteId)) {
-            return;
-        }
-
+                               int srcX, int srcY, int width, int height,
+                               int nextX, int nextY, float nextBlend,
+                               long pixelPtr, int rowPitch) {
+        if (!accepts(spriteId)) return;
         Thread current = Thread.currentThread();
         if (expectedThread == null) {
             expectedThread = current;
         } else if (current != expectedThread) {
-            // Java assertions are stripped without -ea, so log + drop instead:
-            // a stray cross-thread call would race the render-thread flush
-            // and produce torn batches. Drop the patch and surface the
-            // violation in production logs.
-            LOGGER.error("addPatch called from {} but expected {}; dropping patch",
-                         current.getName(), expectedThread.getName());
-            return;
+            throw new IllegalStateException("Animated texture capture must run on the render thread");
         }
-
-        pendingPatches.add(new PatchRecord(spriteId, dstX, dstY, srcX, srcY,
-                                           width, height, srcImageWidth, srcImageHeight,
-                                           pixelPtr, rowPitch));
+        Atlas atlas = atlases.get(currentAtlasId.get());
+        PatchRecord record = atlas.records.get(spriteId);
+        if (record == null) {
+            record = new PatchRecord(atlas, spriteId);
+            atlas.records.put(spriteId, record);
+        }
+        record.dstX = dstX;
+        record.dstY = dstY;
+        record.srcX = srcX;
+        record.srcY = srcY;
+        record.nextX = nextX;
+        record.nextY = nextY;
+        record.nextBlend = nextBlend;
+        record.width = width;
+        record.height = height;
+        record.pixelPtr = pixelPtr;
+        record.rowPitch = rowPitch;
+        if (!record.queued) {
+            record.queued = true;
+            pendingPatches.add(record);
+        }
     }
 
-    private static FrameSampling resolveLabPBRFrameSampling(
-            PatchRecord p, BlockTextureManager.AnimatedSpriteLabPBR pbr) {
-        if (pbr == null || pbr.frameIndices.length == 0) {
-            FrameOrigin origin = new FrameOrigin(p.srcX, p.srcY);
-            return new FrameSampling(origin, origin, 0.0f);
+    /** Removes a sprite before its CPU pixels are released during atlas disposal. */
+    public static void discard(Identifier atlasId, Identifier spriteId) {
+        Atlas atlas = atlases.get(atlasId);
+        PatchRecord record = atlas == null ? null : atlas.records.remove(spriteId);
+        if (record != null && record.queued) {
+            pendingPatches.remove(record);
+            record.queued = false;
         }
-
-        AnimationPlayback playback = animationStates.computeIfAbsent(p.id, ignored -> new AnimationPlayback());
-
-        if (p.isInterpolatedUpload()) {
-            if (!playback.initialized) {
-                playback.sequenceIndex = 0;
-                playback.interpolationTick = 0;
-                playback.initialized = true;
-            }
-
-            int currentSequenceIndex = playback.sequenceIndex;
-            int nextSequenceIndex = (currentSequenceIndex + 1) % pbr.frameIndices.length;
-            int frameTime = Math.max(1, pbr.frameTimes[currentSequenceIndex]);
-            int interpolationTick = Math.min(frameTime - 1, playback.interpolationTick + 1);
-            playback.interpolationTick = interpolationTick;
-
-            FrameOrigin current = frameOriginFromFrameIndex(
-                pbr.frameIndices[currentSequenceIndex], pbr.frameColumns, p.width, p.height);
-            FrameOrigin next = frameOriginFromFrameIndex(
-                pbr.frameIndices[nextSequenceIndex], pbr.frameColumns, p.width, p.height);
-            float nextBlend = frameTime > 1 ? (float) interpolationTick / (float) frameTime : 0.0f;
-            return new FrameSampling(current, next, nextBlend);
-        }
-
-        int frameIndex = frameIndexFromOrigin(p);
-        int expectedNext = playback.initialized
-            ? (playback.sequenceIndex + 1) % pbr.frameIndices.length
-            : -1;
-        playback.sequenceIndex = findSequenceIndex(pbr.frameIndices, frameIndex, expectedNext);
-        playback.interpolationTick = 0;
-        playback.initialized = true;
-
-        FrameOrigin origin = new FrameOrigin(p.srcX, p.srcY);
-        return new FrameSampling(origin, origin, 0.0f);
     }
 
-    private static int frameIndexFromOrigin(PatchRecord p) {
-        int columns = Math.max(1, p.srcImageWidth / Math.max(1, p.width));
-        return (p.srcY / Math.max(1, p.height)) * columns + (p.srcX / Math.max(1, p.width));
-    }
-
-    private static FrameOrigin frameOriginFromFrameIndex(int frameIndex, int frameColumns, int width, int height) {
-        int columns = Math.max(1, frameColumns);
-        int x = (frameIndex % columns) * width;
-        int y = (frameIndex / columns) * height;
-        return new FrameOrigin(x, y);
-    }
-
-    private static int findSequenceIndex(int[] frameIndices, int frameIndex, int expectedNext) {
-        if (expectedNext >= 0 && expectedNext < frameIndices.length && frameIndices[expectedNext] == frameIndex) {
-            return expectedNext;
-        }
-
-        for (int i = 0; i < frameIndices.length; i++) {
-            if (frameIndices[i] == frameIndex) {
-                return i;
-            }
-        }
-
-        return 0;
+    private static void clearPending() {
+        for (PatchRecord record : pendingPatches) record.queued = false;
+        pendingPatches.clear();
     }
 
     /**
@@ -274,163 +227,172 @@ public final class AtlasAnimationForwarder {
      */
     public static void flush(RemixAPI api, long albedoHandle, long emissiveHandle,
                              long roughnessHandle, long metallicHandle, long sssHandle) {
-        int count = pendingPatches.size();
-        if (count == 0 || albedoHandle == 0) {
-            return;
+        if (blockTarget != null) {
+            blockTarget.albedo = albedoHandle;
+            blockTarget.emissive = emissiveHandle;
+            blockTarget.roughness = roughnessHandle;
+            blockTarget.metallic = metallicHandle;
+            blockTarget.sss = sssHandle;
         }
-
-        List<ByteBuffer> ownedBuffers = new ArrayList<>(count * 2);
-
+        if (pendingPatches.isEmpty()) return;
+        List<ByteBuffer> ownedBuffers = new ArrayList<>();
+        List<TextureBatchEntry> entries = new ArrayList<>();
         try {
-            TexturePatch[] albedoPatches = new TexturePatch[count];
-            List<TexturePatch> roughnessPatches = new ArrayList<>();
-            List<TexturePatch> metallicPatches = new ArrayList<>();
-            List<TexturePatch> emissivePatches = new ArrayList<>();
-            List<TexturePatch> sssPatches = new ArrayList<>();
-
-            for (int i = 0; i < count; i++) {
-                PatchRecord p = pendingPatches.get(i);
-                BlockTextureManager.AnimatedSpriteLabPBR pbr =
-                    (labPBRMap != null) ? labPBRMap.get(p.id.toString()) : null;
-
-                final int patchBytes = p.width * p.height * 4;
-                final int patchRowBytes = p.width * 4;
-                ensureScratch(patchBytes);
-                ByteBuffer srcBuf = MemoryUtil.memByteBuffer(p.pixelPtr, p.rowPitch * p.height);
-                FrameSampling labPbrSampling = resolveLabPBRFrameSampling(p, pbr);
-
-                // --- Albedo patch ---
-                if (pbr != null && pbr.aoTable != null) {
-                    LabPBRConverter.applyAOToPatch(
-                        scratch, patchRowBytes,
-                        srcBuf, p.rowPitch,
-                        pbr.aoTable, pbr.aoW, pbr.aoH,
-                        labPbrSampling.current.x, labPbrSampling.current.y,
-                        p.width, p.height);
-                } else {
-                    LabPBRConverter.copyAlbedoPatch(
-                        scratch, patchRowBytes,
-                        srcBuf, p.rowPitch,
-                        p.width, p.height);
-                }
-                // Keep the frame's holes in its colour, as the initial atlas upload does.
-                LabPBRConverter.dilateTransparentRgb(scratch, p.width, 0, 0, p.width, p.height);
-                ByteBuffer albedoDst = DirectBufferPool.acquire(patchBytes);
-                albedoDst.put(scratch, 0, patchBytes);
-                albedoDst.flip();
-                ownedBuffers.add(albedoDst);
-
-                albedoPatches[i] = createPatch(p, albedoDst, patchRowBytes, TextureFormat.RGBA8_UNORM);
-
-                // --- _s RGB material channels ---
-                // LabPBR packs roughness/metallic/SSS into _s.rgb. These
-                // atlases are separate Remix textures, so they need matching
-                // animation patches just like _s.alpha emissive.
-                if (pbr != null && pbr.sRoughnessTable != null && roughnessHandle != 0) {
-                    int patchR8Bytes = p.width * p.height;
-                    ensureScratch(patchR8Bytes);
-                    LabPBRConverter.buildR8Patch(
-                        scratch, p.width,
-                        pbr.sRoughnessTable, pbr.sW, pbr.sH,
-                        labPbrSampling.current.x, labPbrSampling.current.y,
-                        labPbrSampling.next.x, labPbrSampling.next.y,
-                        labPbrSampling.nextBlend,
-                        p.width, p.height);
-                    ByteBuffer roughnessDst = DirectBufferPool.acquire(patchR8Bytes);
-                    roughnessDst.put(scratch, 0, patchR8Bytes);
-                    roughnessDst.flip();
-                    ownedBuffers.add(roughnessDst);
-                    roughnessPatches.add(createPatch(p, roughnessDst, p.width, TextureFormat.R8_UNORM));
-                }
-
-                if (pbr != null && pbr.sMetallicTable != null && metallicHandle != 0) {
-                    int patchR8Bytes = p.width * p.height;
-                    ensureScratch(patchR8Bytes);
-                    LabPBRConverter.buildR8Patch(
-                        scratch, p.width,
-                        pbr.sMetallicTable, pbr.sW, pbr.sH,
-                        labPbrSampling.current.x, labPbrSampling.current.y,
-                        labPbrSampling.next.x, labPbrSampling.next.y,
-                        labPbrSampling.nextBlend,
-                        p.width, p.height);
-                    ByteBuffer metallicDst = DirectBufferPool.acquire(patchR8Bytes);
-                    metallicDst.put(scratch, 0, patchR8Bytes);
-                    metallicDst.flip();
-                    ownedBuffers.add(metallicDst);
-                    metallicPatches.add(createPatch(p, metallicDst, p.width, TextureFormat.R8_UNORM));
-                }
-
-                if (pbr != null && pbr.hasSss && pbr.sSssTable != null && sssHandle != 0) {
-                    LabPBRConverter.buildSssPatch(
-                        scratch, patchRowBytes,
-                        pbr.sSssTable, pbr.sW, pbr.sH,
-                        labPbrSampling.current.x, labPbrSampling.current.y,
-                        labPbrSampling.next.x, labPbrSampling.next.y,
-                        labPbrSampling.nextBlend,
-                        p.width, p.height);
-                    ByteBuffer sssDst = DirectBufferPool.acquire(patchBytes);
-                    sssDst.put(scratch, 0, patchBytes);
-                    sssDst.flip();
-                    ownedBuffers.add(sssDst);
-                    sssPatches.add(createPatch(p, sssDst, patchRowBytes, TextureFormat.RGBA8_UNORM));
-                }
-
-                // --- Emissive patch (authored _s alpha, else a built-in mask) ---
-                if (emissiveHandle == 0) continue;
-                final boolean hasLabPBREmissive = pbr != null && pbr.hasPerPixelEmissive;
-                BuiltinEmission.Mask builtinMask = hasLabPBREmissive ? null : BuiltinEmission.mask(p.id);
-
-                // Skip sprites with neither. Vanilla block luminance affects
-                // cast light, not surface emission.
-                if (!hasLabPBREmissive && builtinMask == null) continue;
-
-                if (hasLabPBREmissive) {
-                    LabPBRConverter.buildEmissivePatch(
-                        scratch, patchRowBytes,
-                        srcBuf, p.rowPitch,
-                        pbr.sAlphaTable, pbr.sW, pbr.sH,
-                        labPbrSampling.current.x, labPbrSampling.current.y,
-                        labPbrSampling.next.x, labPbrSampling.next.y,
-                        labPbrSampling.nextBlend,
-                        p.width, p.height,
-                        0f);
-                } else {
-                    // The mask is over the sprite's own UV space, which every animation frame shares.
-                    LabPBRConverter.buildEmissiveMaskPatch(
-                        scratch, patchRowBytes,
-                        srcBuf, p.rowPitch,
-                        p.width, p.height, builtinMask);
-                }
-
-                ByteBuffer emissiveDst = DirectBufferPool.acquire(patchBytes);
-                emissiveDst.put(scratch, 0, patchBytes);
-                emissiveDst.flip();
-                ownedBuffers.add(emissiveDst);
-
-                emissivePatches.add(createPatch(p, emissiveDst, patchRowBytes, TextureFormat.RGBA8_UNORM));
+            for (Atlas atlas : atlases.values()) {
+                for (Target target : atlas.targets) appendTarget(target, entries, ownedBuffers);
             }
-
-            // One batch per frame: the runtime handles each entry's texture
-            // independently, so all five channels travel in a single call.
-            List<TextureBatchEntry> entries = new ArrayList<>(5);
-            addBatchEntry(entries, albedoHandle, albedoPatches);
-            addBatchEntry(entries, roughnessHandle, roughnessPatches);
-            addBatchEntry(entries, metallicHandle, metallicPatches);
-            addBatchEntry(entries, emissiveHandle, emissivePatches);
-            addBatchEntry(entries, sssHandle, sssPatches);
-
-            TexturePatchInfo info = new TexturePatchInfo();
-            info.entries = entries.toArray(new TextureBatchEntry[0]);
-            api.updateTextureFromMemory(info);
-
+            if (!entries.isEmpty()) {
+                TexturePatchInfo info = new TexturePatchInfo();
+                info.entries = entries.toArray(new TextureBatchEntry[0]);
+                api.updateTextureFromMemory(info);
+            }
         } catch (Exception e) {
             LOGGER.error("Error flushing animation patches", e);
         } finally {
-            for (ByteBuffer buffer : ownedBuffers) {
-                DirectBufferPool.release(buffer);
-            }
-            pendingPatches.clear();
+            for (ByteBuffer buffer : ownedBuffers) DirectBufferPool.release(buffer);
+            clearPending();
         }
+    }
+
+    private static void appendTarget(Target target, List<TextureBatchEntry> entries, List<ByteBuffer> ownedBuffers) {
+        long albedoHandle = target.albedo, emissiveHandle = target.emissive;
+        long roughnessHandle = target.roughness, metallicHandle = target.metallic, sssHandle = target.sss;
+        int count = 0;
+        for (PatchRecord patch : pendingPatches) if (patch.atlas == target.atlas) count++;
+        if (count == 0 || albedoHandle == 0) return;
+        TexturePatch[] albedoPatches = new TexturePatch[count];
+        List<TexturePatch> roughnessPatches = new ArrayList<>();
+        List<TexturePatch> metallicPatches = new ArrayList<>();
+        List<TexturePatch> emissivePatches = new ArrayList<>();
+        List<TexturePatch> sssPatches = new ArrayList<>();
+
+        int i = 0;
+        for (PatchRecord p : pendingPatches) {
+            if (p.atlas != target.atlas) continue;
+            BlockTextureManager.AnimatedSpriteLabPBR pbr = target.labPBR.get(p.resourceName);
+
+            final int patchBytes = p.width * p.height * 4;
+            final int patchRowBytes = p.width * 4;
+            ensureScratch(patchBytes);
+            ByteBuffer srcBuf = MemoryUtil.memByteBuffer(p.pixelPtr, p.rowPitch * (p.height - 1) + patchRowBytes);
+
+            // --- Albedo patch ---
+            if (pbr != null && pbr.aoTable != null) {
+                LabPBRConverter.applyAOToPatch(
+                    scratch, patchRowBytes,
+                    srcBuf, p.rowPitch,
+                    pbr.aoTable, pbr.aoW, pbr.aoH,
+                    p.srcX, p.srcY,
+                    p.width, p.height);
+            } else {
+                LabPBRConverter.copyAlbedoPatch(
+                    scratch, patchRowBytes,
+                    srcBuf, p.rowPitch,
+                    p.width, p.height);
+            }
+            // Keep the frame's holes in its colour, as the initial atlas upload does.
+            LabPBRConverter.dilateTransparentRgb(scratch, p.width, 0, 0, p.width, p.height);
+            ByteBuffer albedoDst = DirectBufferPool.acquire(patchBytes);
+            albedoDst.put(scratch, 0, patchBytes);
+            albedoDst.flip();
+            ownedBuffers.add(albedoDst);
+
+            albedoPatches[i++] = createPatch(p, albedoDst, patchRowBytes, TextureFormat.RGBA8_UNORM);
+
+            // --- _s RGB material channels ---
+            // LabPBR packs roughness/metallic/SSS into _s.rgb. These
+            // atlases are separate Remix textures, so they need matching
+            // animation patches just like _s.alpha emissive.
+            if (pbr != null && pbr.sRoughnessTable != null && roughnessHandle != 0) {
+                int patchR8Bytes = p.width * p.height;
+                ensureScratch(patchR8Bytes);
+                LabPBRConverter.buildR8Patch(
+                    scratch, p.width,
+                    pbr.sRoughnessTable, pbr.sW, pbr.sH,
+                    p.srcX, p.srcY,
+                    p.nextX, p.nextY,
+                    p.nextBlend,
+                    p.width, p.height);
+                ByteBuffer roughnessDst = DirectBufferPool.acquire(patchR8Bytes);
+                roughnessDst.put(scratch, 0, patchR8Bytes);
+                roughnessDst.flip();
+                ownedBuffers.add(roughnessDst);
+                roughnessPatches.add(createPatch(p, roughnessDst, p.width, TextureFormat.R8_UNORM));
+            }
+
+            if (pbr != null && pbr.sMetallicTable != null && metallicHandle != 0) {
+                int patchR8Bytes = p.width * p.height;
+                ensureScratch(patchR8Bytes);
+                LabPBRConverter.buildR8Patch(
+                    scratch, p.width,
+                    pbr.sMetallicTable, pbr.sW, pbr.sH,
+                    p.srcX, p.srcY,
+                    p.nextX, p.nextY,
+                    p.nextBlend,
+                    p.width, p.height);
+                ByteBuffer metallicDst = DirectBufferPool.acquire(patchR8Bytes);
+                metallicDst.put(scratch, 0, patchR8Bytes);
+                metallicDst.flip();
+                ownedBuffers.add(metallicDst);
+                metallicPatches.add(createPatch(p, metallicDst, p.width, TextureFormat.R8_UNORM));
+            }
+
+            if (pbr != null && pbr.hasSss && pbr.sSssTable != null && sssHandle != 0) {
+                LabPBRConverter.buildSssPatch(
+                    scratch, patchRowBytes,
+                    pbr.sSssTable, pbr.sW, pbr.sH,
+                    p.srcX, p.srcY,
+                    p.nextX, p.nextY,
+                    p.nextBlend,
+                    p.width, p.height);
+                ByteBuffer sssDst = DirectBufferPool.acquire(patchBytes);
+                sssDst.put(scratch, 0, patchBytes);
+                sssDst.flip();
+                ownedBuffers.add(sssDst);
+                sssPatches.add(createPatch(p, sssDst, patchRowBytes, TextureFormat.RGBA8_UNORM));
+            }
+
+            // --- Emissive patch (authored _s alpha, else a built-in mask) ---
+            if (emissiveHandle == 0) continue;
+            final boolean hasLabPBREmissive = pbr != null && pbr.hasPerPixelEmissive;
+            BuiltinEmission.Mask builtinMask = hasLabPBREmissive ? null : BuiltinEmission.mask(p.id);
+
+            // Skip sprites with neither. Vanilla block luminance affects
+            // cast light, not surface emission.
+            if (!hasLabPBREmissive && builtinMask == null) continue;
+
+            if (hasLabPBREmissive) {
+                LabPBRConverter.buildEmissivePatch(
+                    scratch, patchRowBytes,
+                    srcBuf, p.rowPitch,
+                    pbr.sAlphaTable, pbr.sW, pbr.sH,
+                    p.srcX, p.srcY,
+                    p.nextX, p.nextY,
+                    p.nextBlend,
+                    p.width, p.height,
+                    0f);
+            } else {
+                // The mask is over the sprite's own UV space, which every animation frame shares.
+                LabPBRConverter.buildEmissiveMaskPatch(
+                    scratch, patchRowBytes,
+                    srcBuf, p.rowPitch,
+                    p.width, p.height, builtinMask);
+            }
+
+            ByteBuffer emissiveDst = DirectBufferPool.acquire(patchBytes);
+            emissiveDst.put(scratch, 0, patchBytes);
+            emissiveDst.flip();
+            ownedBuffers.add(emissiveDst);
+
+            emissivePatches.add(createPatch(p, emissiveDst, patchRowBytes, TextureFormat.RGBA8_UNORM));
+        }
+
+        addBatchEntry(entries, albedoHandle, albedoPatches);
+        addBatchEntry(entries, roughnessHandle, roughnessPatches);
+        addBatchEntry(entries, metallicHandle, metallicPatches);
+        addBatchEntry(entries, emissiveHandle, emissivePatches);
+        addBatchEntry(entries, sssHandle, sssPatches);
+
     }
 
     private static void ensureScratch(int byteCount) {
@@ -469,13 +431,12 @@ public final class AtlasAnimationForwarder {
     }
 
     public static void clear() {
-        // Flip active OFF first so a concurrent addPatch drops its record
-        // rather than inserting into a list we're about to wipe.
+        // All registration, queueing and disposal run on the render thread.
         active = false;
-        pendingPatches.clear();
-        labPBRMap = null;
-        blockAtlasSpriteIds = null;
-        animationStates.clear();
+        clearPending();
+        atlases.clear();
+        blockTarget = null;
+        generation++;
         expectedThread = null;
         currentAtlasId.remove();
         LOGGER.info("AtlasAnimationForwarder cleared");
@@ -491,18 +452,20 @@ public final class AtlasAnimationForwarder {
 
     /**
      * Deactivates queueing and drops any pending records without wiping
-     * {@link #labPBRMap} / {@link #blockAtlasSpriteIds}.
+     * any atlas registrations.
      * Use for reversible pauses like the RTX-toggle path where
      * {@link #resume()} should be a cheap flip without a resource-pack reload.
      */
     public static void pause() {
         active = false;
-        pendingPatches.clear();
-        animationStates.clear();
+        clearPending();
+        for (Atlas atlas : atlases.values()) atlas.records.clear();
+        generation++;
     }
 
     public static void resume() {
-        active = blockAtlasSpriteIds != null;
+        generation++;
+        active = blockTarget != null;
     }
 
     private AtlasAnimationForwarder() {}

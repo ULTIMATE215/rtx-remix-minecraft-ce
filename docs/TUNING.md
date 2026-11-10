@@ -1,3 +1,10 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
+SPDX-License-Identifier: Apache-2.0
+
+Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
+-->
+
 # Tuning
 
 Developer knobs: the JVM system properties the mod reads, the Gradle
@@ -128,11 +135,14 @@ their distance.
 | `rtxremix.waterRapids.spawnBudgetPerTick` | Foam and mist particles spawned per tick near fast water. 0 turns the effect off | `WaterRapidParticleSpawner` |
 | `rtxremix.particles.fastAirCollision` | Take a fast path through particle collision when every swept cell is air. Set to false to disable the fast path | `ParticleStateMixin` |
 | `rtxremix.particles.fastAirCollisionMaxBlocks` | Largest sweep, in cells, that the fast path handles | `ParticleStateMixin` |
+| `rtxremix.particles.previousFrame` | Set to true to restore the double-buffered particle order: each frame publishes the previous frame's payload and joins its own worker after Submit, so particles trail the scene by one frame but the join never delays Submit. By default the frame joins its worker just before Submit and publishes particles with the scene they were prepared for | `RemixRenderer` |
+| `rtxremix.entityTextures.sync` | Set to true to load entity textures synchronously on the render thread the first time they are seen, as before. By default they are decoded on a background thread and created on the render thread under a per-frame budget; until its set is created, usually within a few frames, a newly seen texture's layers are not drawn, the same gap a downloading skin already has. Textures the game already holds in memory, such as downloaded skins, glyph pages, and maps, are still built the frame they are first seen, unless one needs the LabPBR variant index before it has been built | `RemixEntitySubmitter` |
 
 ## Camera Effects
 
 | Key | Effect | Owner |
 |---|---|---|
+| `rtxremix.motionBlur.fgAdaptive` | Set to false to stop motion blur adapting to DLSS frame generation. By default, while `rtx.dlfg.enable` resolves true, the exposure fraction is scaled down for a low base frame rate and fast camera turns, capped at one real frame, and the blur jitter is lowered, so generated frames do not drag overlapping streaks into a wobble | `CameraEffectsSettings` |
 | `rtxremix.allowRtssVulkanLayer` | Set to true to let RivaTuner Statistics Server's Vulkan layer into the Remix runtime. By default the mod sets `DISABLE_RTSS_LAYER=1` for its own process before the runtime loads, because with DLSS frame generation in fullscreen that layer faults the GPU within seconds (`VK_ERROR_DEVICE_LOST`). The RTSS overlay then does not draw in the game. A `DISABLE_RTSS_LAYER` value already in the environment is left as is | `RtssVulkanLayerPolicy` |
 | `rtxremix.allowRtssHooks` | Set to true to let RivaTuner Statistics Server's hook DLL (`RTSSHooks64.dll`) into the game. By default, while RTSS runs at launch, the mod sets Windows' extension-point mitigation for its own process at pre-launch, because that DLL hooks Vulkan presentation independently of the layer and faults the GPU once DLSS frame generation is on. Other processes keep RTSS; this process also refuses AppInit DLLs and legacy input methods. The 300-frame performance report shows whether the DLL is in the process | `RtssHookBlock` |
 

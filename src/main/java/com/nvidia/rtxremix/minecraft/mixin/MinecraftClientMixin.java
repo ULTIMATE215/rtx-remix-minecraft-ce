@@ -1,11 +1,17 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.texture.TextureManager;
 import net.minecraft.util.thread.BlockableEventLoop;
 import com.nvidia.rtxremix.minecraft.RemixRenderer;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
@@ -398,29 +404,12 @@ public abstract class MinecraftClientMixin {
         rtxremix$closeTickPhase();
     }
 
-    @Inject(
-        method = "tick",
-        at = @At(
-            value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/texture/TextureManager;tick()V"
-        ),
-        require = 0
-    )
-    private void rtxremix$beforeTextureTick(CallbackInfo ci) {
-        rtxremix$openTickPhase("MinecraftClient.tick.textures");
-    }
-
-    @Inject(
-        method = "tick",
-        at = @At(
-            value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/texture/TextureManager;tick()V",
-            shift = At.Shift.AFTER
-        ),
-        require = 0
-    )
-    private void rtxremix$afterTextureTick(CallbackInfo ci) {
-        rtxremix$closeTickPhase();
+    @WrapOperation(method = "runTick", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/texture/TextureManager;tick()V"))
+    private void rtxremix$textureTick(TextureManager textures, Operation<Void> original) {
+        try (ProfileScope scope = ProfileScope.begin("MinecraftClient.render.textures")) {
+            original.call(textures);
+        }
     }
 
     @Inject(
@@ -470,31 +459,6 @@ public abstract class MinecraftClientMixin {
         require = 0
     )
     private void rtxremix$afterGameRendererTick(CallbackInfo ci) {
-        rtxremix$closeTickPhase();
-    }
-
-    @Inject(
-        method = "tick",
-        at = @At(
-            value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/LevelRenderer;tick()V"
-        ),
-        require = 0
-    )
-    private void rtxremix$beforeWorldRendererTick(CallbackInfo ci) {
-        rtxremix$openTickPhase("MinecraftClient.tick.worldRenderer");
-    }
-
-    @Inject(
-        method = "tick",
-        at = @At(
-            value = "INVOKE",
-            target = "Lnet/minecraft/client/renderer/LevelRenderer;tick()V",
-            shift = At.Shift.AFTER
-        ),
-        require = 0
-    )
-    private void rtxremix$afterWorldRendererTick(CallbackInfo ci) {
         rtxremix$closeTickPhase();
     }
 

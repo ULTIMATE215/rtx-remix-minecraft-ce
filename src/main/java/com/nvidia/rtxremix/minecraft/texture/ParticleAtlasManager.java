@@ -1,11 +1,15 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.texture;
 
 import com.nvidia.rtxremix.minecraft.util.DirectBufferPool;
 import com.nvidia.rtxremix.minecraft.mixin.SpriteAtlasAccessor;
+import com.nvidia.rtxremix.minecraft.mixin.SpriteContentsAccessor;
 import com.nvidia.rtxremix.minecraft.asset.RemixTextureStore;
 import com.nvidia.rtxremix.minecraft.asset.RemixTexture;
 import com.nvidia.rtxremix.minecraft.asset.RemixMaterialStore;
@@ -26,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.HashMap;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.AbstractTexture;
 import net.minecraft.client.renderer.texture.TextureAtlas;
@@ -34,14 +39,14 @@ import net.minecraft.resources.Identifier;
 import net.minecraft.server.packs.resources.ResourceManager;
 
 /**
- * Captures the particle sprite atlas and builds parallel LabPBR atlas textures
+ * Captures a particle or item sprite atlas and builds parallel LabPBR atlas textures
  * plus a single atlas-wide {@link MaterialInfoOpaqueEXT} that carries its own
  * alpha test rather than draw-call alpha state. Blending is chosen per instance
- * by {@link RemixParticleRenderer} through {@link InstanceInfoBlendEXT}, so one
+ * by {@code RemixParticleRenderer} through {@code InstanceInfoBlendEXT}, so one
  * material serves both the alpha-tested and the blended particle passes.
  *
- * <p>Mirrors {@link BlockTextureManager#buildAtlasMaterials} but operates on
- * the particle atlas ({@code SpriteAtlasTexture.PARTICLE_ATLAS_TEXTURE}).
+ * <p>The default instance owns {@link TextureAtlas#LOCATION_PARTICLES}; the entity
+ * submitter also uses this manager for the item atlas and its animation updates.
  *
  * <p>TERRAIN_SHEET particles reuse materials from {@link BlockTextureManager}
  * rather than creating new ones here.
@@ -51,17 +56,24 @@ public class ParticleAtlasManager {
     private static final Logger LOGGER = LoggerFactory.getLogger(ParticleAtlasManager.class);
 
     private final RemixRenderer renderer;
+    private final Identifier atlasId;
 
     private final List<RemixTexture> managedTextures = new ArrayList<>();
     private final List<RemixMaterial> managedMaterials = new ArrayList<>();
 
     private RemixMaterial material;
+    private AtlasAnimationForwarder.Target animation;
 
     private boolean initialized;
     private boolean initFailed;
 
     public ParticleAtlasManager(RemixRenderer renderer) {
+        this(renderer, TextureAtlas.LOCATION_PARTICLES);
+    }
+
+    public ParticleAtlasManager(RemixRenderer renderer, Identifier atlasId) {
         this.renderer = renderer;
+        this.atlasId = atlasId;
     }
 
     public void initialize() {
@@ -72,7 +84,7 @@ public class ParticleAtlasManager {
             if (api == null || client == null || client.getTextureManager() == null) return;
 
             AbstractTexture tex = client.getTextureManager()
-                    .getTexture(TextureAtlas.LOCATION_PARTICLES);
+                    .getTexture(atlasId);
             if (!(tex instanceof TextureAtlas atlas)) return;
 
             SpriteAtlasAccessor acc = (SpriteAtlasAccessor) atlas;
@@ -111,6 +123,7 @@ public class ParticleAtlasManager {
             boolean hasAnyNormal = false, hasAnyHeight = false, hasAnyEmissive = false;
             ResourceManager rm = client.getResourceManager();
             LabPBRConverter.VariantCache labPBRVariants = LabPBRConverter.buildVariantCache(rm);
+            Map<String, BlockTextureManager.AnimatedSpriteLabPBR> animationPbr = new HashMap<>();
 
             for (var entry : sprites.entrySet()) {
                 Identifier spriteId = entry.getKey();
@@ -120,11 +133,16 @@ public class ParticleAtlasManager {
                 int pixW = sprite.contents().width();
                 int pixH = sprite.contents().height();
 
-                Identifier texId = Identifier.fromNamespaceAndPath(spriteId.getNamespace(),
-                        "particle/" + spriteId.getPath());
+                Identifier texId = TextureAtlas.LOCATION_PARTICLES.equals(atlasId)
+                        ? Identifier.fromNamespaceAndPath(spriteId.getNamespace(), "particle/" + spriteId.getPath())
+                        : spriteId;
                 NativeImage nImg = labPBRVariants.loadVariant(texId, "_n");
                 NativeImage sImg = labPBRVariants.loadVariant(texId, "_s");
                 try {
+                    if (((SpriteContentsAccessor) sprite.contents()).getAnimation() != null
+                            && (nImg != null || sImg != null)) {
+                        animationPbr.put(spriteId.toString(), BlockTextureManager.AnimatedSpriteLabPBR.fromVariants(texId, nImg, sImg));
+                    }
                     if (nImg != null) {
                         LabPBRConverter.blitNormal(normalAtlas, atlasW, nImg, pixX, pixY, pixW, pixH);
                         LabPBRConverter.blitHeight(heightAtlas, atlasW, nImg, pixX, pixY, pixW, pixH);
@@ -179,6 +197,9 @@ public class ParticleAtlasManager {
                 return;
             }
 
+            animation = AtlasAnimationForwarder.register(atlasId, sprites.keySet(), animationPbr,
+                    albedoTex.getHandle(), emissiveTex == null ? 0 : emissiveTex.getHandle(),
+                    roughnessTex == null ? 0 : roughnessTex.getHandle(), metallicTex == null ? 0 : metallicTex.getHandle(), 0);
             initialized = true;
             LOGGER.info("Particle atlas initialized ({}x{}, {} sprites, normal={}, height={}, emissive={})",
                     atlasW, atlasH, sprites.size(), hasAnyNormal, hasAnyHeight, hasAnyEmissive);
@@ -197,9 +218,9 @@ public class ParticleAtlasManager {
                 .roughnessConstant(1f)
                 .metallicConstant(0f)
                 .blendType(MaterialInfoOpaqueEXT.BLEND_TYPE_ALPHA)
-                .useDrawCallAlphaState(false)
+                .useDrawCallAlphaState(TextureAtlas.LOCATION_ITEMS.equals(atlasId))
                 .alphaTestType(4)
-                .alphaReferenceValue(10);
+                .alphaReferenceValue(TextureAtlas.LOCATION_ITEMS.equals(atlasId) ? 128 : 10);
         if (roughness != null) ob.roughnessTexture(roughness.getHandle());
         if (metallic != null)  ob.metallicTexture(metallic.getHandle());
         if (height != null)    ob.heightTexture(height.getHandle()).displaceIn(0.02f);
@@ -246,6 +267,10 @@ public class ParticleAtlasManager {
     }
 
     public void cleanup() {
+        if (animation != null) {
+            animation.close();
+            animation = null;
+        }
         for (RemixMaterial mat : managedMaterials)
             if (!mat.isDeleted()) mat.destroy();
         managedMaterials.clear();

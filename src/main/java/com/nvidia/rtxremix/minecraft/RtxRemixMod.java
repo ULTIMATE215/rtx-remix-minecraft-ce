@@ -265,6 +265,7 @@ public class RtxRemixMod implements ClientModInitializer {
         }
         releaseRemixMenuCapture();
         relockCursorUnlessScreenOpen();
+        renderer.onRemixMenuClosed();
         LOGGER.info("Remix menu closed");
     }
 
@@ -296,6 +297,7 @@ public class RtxRemixMod implements ClientModInitializer {
             case CLOSED -> {
                 KeyMapping.releaseAll();
                 relockCursorUnlessScreenOpen();
+                renderer.onRemixMenuClosed();
                 LOGGER.info("Remix menu closed by the runtime");
             }
             case OWN_WRITE_OVERDUE -> LOGGER.warn(
@@ -359,7 +361,6 @@ public class RtxRemixMod implements ClientModInitializer {
         BlockEntityRenderers.register(
                 CopperBeaconBlockEntity.TYPE, CopperBeaconBlockEntityRenderer::new);
         MenuScreens.register(CopperBeaconScreenHandler.TYPE, CopperBeaconScreen::new);
-        RemixWeatherRenderer.registerShaders();
         LOGGER.info("========================================");
         LOGGER.info("RTX Remix Renderer v{} initializing...", getModVersion());
         LOGGER.info("{}", CommunityEdition.banner());

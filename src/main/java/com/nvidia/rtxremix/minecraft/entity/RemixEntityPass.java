@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.entity;
 
@@ -24,6 +27,7 @@ import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
+import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import net.minecraft.core.registries.BuiltInRegistries;
@@ -200,12 +204,19 @@ public class RemixEntityPass {
     }
 
     /**
-     * Drops every recorded pose. A snapshot names the cuboids and sprites a model was
-     * baked with, which a resource reload replaces, so a replay afterwards would rebuild
-     * its meshes from the previous stitch's UV rectangles.
+     * Releases the previous world's poses and the models used by command replay.
+     * A resource reload also replaces cuboids, sprites and feature renderers, so none
+     * of their references may survive into the next capture.
      */
-    public void discardPoseSnapshots() {
+    public void clear() {
         poseSnapshots.clear();
+        snapshotWorld = null;
+        entityHeap.clear();
+        capturedIds.clear();
+        frameActive = false;
+        commandCapture.close();
+        provider.clear();
+        replayProvider.clear();
     }
 
     /** Abandons a capture window left open by a frame whose submit never ran. */
@@ -252,18 +263,32 @@ public class RemixEntityPass {
         return captureAndSubmit(entity, dispatcher, tickDelta, submitter, false);
     }
 
+    /** Captures the state vanilla already extracted, without evaluating its model twice. */
+    public boolean captureAndSubmit(EntityRenderState state, EntityRenderDispatcher dispatcher,
+                                    CameraRenderState camera, RemixEntitySubmitter submitter) {
+        EntityCaptureStateAccess source = (EntityCaptureStateAccess) state;
+        return captureAndSubmit(source.rtxremix$owner(), dispatcher, source.rtxremix$partialTick(),
+                submitter, false, state, camera);
+    }
+
     private boolean captureAndSubmit(Entity entity, EntityRenderDispatcher dispatcher,
                                      float tickDelta, RemixEntitySubmitter submitter,
                                      boolean snapshotPose) {
+        return captureAndSubmit(entity, dispatcher, tickDelta, submitter, snapshotPose,
+                null, commandCapture.cameraState());
+    }
+
+    private boolean captureAndSubmit(Entity entity, EntityRenderDispatcher dispatcher,
+                                     float tickDelta, RemixEntitySubmitter submitter,
+                                     boolean snapshotPose, EntityRenderState state, CameraRenderState camera) {
         if (!capturedIds.add(entity.getId())) {
             return false;
         }
         long captureStart = System.nanoTime();
-        // Remix traces shadows from the scene lights, so vanilla's blob shadow
-        // pieces have no consumer; renderOneEntity clears them from the render state.
+        // Command replay skips vanilla's blob shadows; Remix traces the geometry's shadow.
         EntityCaptureResult result;
         try {
-            result = renderOneEntity(entity, dispatcher, tickDelta,
+            result = renderOneEntity(entity, dispatcher, tickDelta, state, camera,
                     isFirstPersonLocalPlayer(Minecraft.getInstance(), entity));
         } catch (Exception e) {
             LOGGER.error("Error capturing entity {}: {}", entity.getType(), e.getMessage());
@@ -719,8 +744,11 @@ public class RemixEntityPass {
     private EntityCaptureResult renderOneEntity(Entity entity,
                                                  EntityRenderDispatcher dispatcher,
                                                  float tickDelta,
+                                                 EntityRenderState extracted,
+                                                 CameraRenderState camera,
                                                  boolean firstPersonLocalPlayer) {
-        Vec3 entityPos = entity.getPosition(tickDelta);
+        EntityRenderState state = extracted != null ? extracted : dispatcher.extractEntity(entity, tickDelta);
+        Vec3 entityPos = new Vec3(state.x, state.y, state.z);
         float yaw = Mth.lerp(tickDelta, entity.yRotO, entity.getYRot());
 
         provider.beginEntity();
@@ -730,17 +758,17 @@ public class RemixEntityPass {
         ctx.begin(true);
 
         sharedMatrices.pushPose();
+        int outlineColor = state.outlineColor;
         try {
-            EntityRenderState state = dispatcher.extractEntity(entity, tickDelta);
-            state.shadowPieces.clear();
             state.outlineColor = EntityRenderState.NO_OUTLINE;
-            dispatcher.submit(state, commandCapture.cameraState(), 0.0, 0.0, 0.0,
+            dispatcher.submit(state, camera, 0.0, 0.0, 0.0,
                     sharedMatrices, commandCapture.queue());
             commandCapture.flush();
         } catch (RuntimeException | Error e) {
             commandCapture.discard();
             throw e;
         } finally {
+            state.outlineColor = outlineColor;
             // Both reset even if a renderer threw mid-traversal, which skips the
             // dispatcher's RETURN hook: the identity root returns every pooled
             // entry, and a capture left open would make the next one look nested

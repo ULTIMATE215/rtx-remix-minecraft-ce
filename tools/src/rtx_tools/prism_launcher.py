@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 """The Prism client launcher, signed in to a Microsoft account that owns Minecraft.
 
@@ -432,7 +435,7 @@ class PrismLauncher:
 
     def _java(self, arch: str) -> Path:
         """javaw.exe of a JDK Prism accepts for the pinned Minecraft and the game's native libraries load into: the
-        detected JDK when it is a JDK 21 for `arch`, else one installed where JDKs usually are."""
+        detected JDK when it matches the game's Java major and `arch`, else one installed where JDKs usually are."""
         detected = runner.detect_java_home()
         home = prism.find_game_jdk(arch, detected)
         if home is None:

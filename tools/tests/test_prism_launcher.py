@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 import io
 import os
@@ -340,11 +343,14 @@ def test_check_reports_blockers_in_order(launcher, monkeypatch):
     assert opened == [True]
 
 
-@pytest.mark.parametrize("java_home", [None, "17.0.9"])
-def test_check_and_start_need_a_jdk_21(launcher, fake_prism, monkeypatch, tmp_path, java_home):
-    home = None if java_home is None else write_jdk(tmp_path / "jdk-17", version=java_home)
+@pytest.mark.parametrize("java_home", [None, "17.0.9", "21.0.5"])
+def test_check_and_start_need_the_games_jdk(launcher, fake_prism, monkeypatch, tmp_path, java_home):
+    home = None if java_home is None else write_jdk(tmp_path / "incompatible-jdk", version=java_home)
     monkeypatch.setattr(runner, "detect_java_home", lambda: home)
-    message = re.escape(f"Minecraft {prism.installer_constant('MC_VERSION')} in Prism needs a 64-bit JDK 21 for win64")
+    message = re.escape(
+        f"Minecraft {prism.installer_constant('MC_VERSION')} in Prism "
+        f"needs a 64-bit JDK {prism.GAME_JAVA_MAJOR} for win64"
+    )
     with pytest.raises(client.LaunchBlocked, match=message) as at_check:
         launcher.check()
     assert "JAVA_HOME" in str(at_check.value)
@@ -353,8 +359,8 @@ def test_check_and_start_need_a_jdk_21(launcher, fake_prism, monkeypatch, tmp_pa
     assert fake_prism.process is None
 
 
-def test_start_runs_the_game_on_a_jdk_21_for_the_launch_architecture(launcher, fake_prism, monkeypatch, tmp_path):
-    arm64 = write_jdk(tmp_path / "Program Files" / "Microsoft" / "jdk-21.0.5.11-hotspot", machine=0xAA64)
+def test_start_runs_the_game_on_its_jdk_for_the_launch_architecture(launcher, fake_prism, monkeypatch, tmp_path):
+    arm64 = write_jdk(tmp_path / "Program Files" / "Microsoft" / "jdk-25.0.1.8-hotspot", machine=0xAA64)
     monkeypatch.setenv("ProgramFiles", str(tmp_path / "Program Files"))
     launcher.start(LaunchRequest(arch="arm64", env={}))
     assert f"JavaPath={(arm64 / 'bin' / 'javaw.exe').as_posix()}" in instance_cfg(launcher).splitlines()
@@ -365,7 +371,7 @@ def test_start_runs_the_game_on_a_jdk_21_for_the_launch_architecture(launcher, f
 
 def test_check_looks_for_a_jdk_for_the_host_architecture(launcher, fake_prism, monkeypatch):
     monkeypatch.setattr(runner, "host_arch", lambda override=None: "arm64")
-    with pytest.raises(client.LaunchBlocked, match="JDK 21 for arm64"):
+    with pytest.raises(client.LaunchBlocked, match=f"JDK {prism.GAME_JAVA_MAJOR} for arm64"):
         launcher.check()
 
 

@@ -170,16 +170,12 @@ public class BlockTextureManager {
         /** Whether any pixel of the sprite's {@code _s} alpha channel is below 255. */
         public final boolean hasPerPixelEmissive;
         public final boolean hasSss;
-        public final int[] frameIndices;
-        public final int[] frameTimes;
-        public final int frameColumns;
 
         AnimatedSpriteLabPBR(byte[] aoTable, int aoW, int aoH,
                              byte[] sAlphaTable, byte[] sRoughnessTable,
                              byte[] sMetallicTable, byte[] sSssTable,
                              int sW, int sH,
-                             boolean hasPerPixelEmissive, boolean hasSss,
-                             int[] frameIndices, int[] frameTimes, int frameColumns) {
+                             boolean hasPerPixelEmissive, boolean hasSss) {
             this.aoTable = aoTable; this.aoW = aoW; this.aoH = aoH;
             this.sAlphaTable = sAlphaTable;
             this.sRoughnessTable = sRoughnessTable;
@@ -188,9 +184,21 @@ public class BlockTextureManager {
             this.sW = sW; this.sH = sH;
             this.hasPerPixelEmissive = hasPerPixelEmissive;
             this.hasSss = hasSss;
-            this.frameIndices = frameIndices;
-            this.frameTimes = frameTimes;
-            this.frameColumns = frameColumns;
+        }
+
+        /** Copies sidecar channels while their decoded images are live; safe on a CPU worker. */
+        public static AnimatedSpriteLabPBR fromVariants(Identifier sprite, NativeImage normal, NativeImage specular) {
+            return new AnimatedSpriteLabPBR(
+                    normal == null ? null : LabPBRConverter.buildAOTable(normal),
+                    normal == null ? 0 : normal.getWidth(), normal == null ? 0 : normal.getHeight(),
+                    specular == null ? null : LabPBRConverter.applyEmissionGain(
+                            LabPBRConverter.buildSAlphaTable(specular), BuiltinEmission.gain(sprite)),
+                    specular == null ? null : LabPBRConverter.buildSRoughnessTable(specular),
+                    specular == null ? null : LabPBRConverter.buildSMetallicTable(specular),
+                    specular == null ? null : LabPBRConverter.buildSSssTable(specular),
+                    specular == null ? 0 : specular.getWidth(), specular == null ? 0 : specular.getHeight(),
+                    specular != null && LabPBRConverter.hasEmissiveData(specular),
+                    specular != null && LabPBRConverter.hasSSSData(specular));
         }
     }
 
@@ -407,34 +415,7 @@ public class BlockTextureManager {
             NativeImage sI = labPBRVariants.loadVariant(e.getKey(), "_s");
             try {
                 if (nI == null && sI == null) continue;
-                byte[] aoTable     = (nI != null) ? LabPBRConverter.buildAOTable(nI)     : null;
-                int aoW            = (nI != null) ? nI.getWidth()                        : 0;
-                int aoH            = (nI != null) ? nI.getHeight()                       : 0;
-                byte[] sAlphaTable = (sI != null)
-                        ? LabPBRConverter.applyEmissionGain(LabPBRConverter.buildSAlphaTable(sI), BuiltinEmission.gain(e.getKey()))
-                        : null;
-                byte[] sRoughnessTable = (sI != null) ? LabPBRConverter.buildSRoughnessTable(sI) : null;
-                byte[] sMetallicTable = (sI != null) ? LabPBRConverter.buildSMetallicTable(sI) : null;
-                byte[] sSssTable = (sI != null) ? LabPBRConverter.buildSSssTable(sI) : null;
-                int sW             = (sI != null) ? sI.getWidth()                        : 0;
-                int sH             = (sI != null) ? sI.getHeight()                       : 0;
-                boolean hasPerPixelEmissive = sI != null && LabPBRConverter.hasEmissiveData(sI);
-                boolean hasSss = sI != null && LabPBRConverter.hasSSSData(sI);
-                List<SpriteContents.FrameInfo> frames = animation.frames;
-                int[] frameIndices = new int[frames.size()];
-                int[] frameTimes = new int[frames.size()];
-                for (int i = 0; i < frames.size(); i++) {
-                    SpriteContents.FrameInfo frame = frames.get(i);
-                    frameIndices[i] = frame.index;
-                    frameTimes[i] = frame.time;
-                }
-                int variantW = (sI != null) ? sW : aoW;
-                int frameColumns = Math.max(1, variantW / Math.max(1, contents.width()));
-                result.put(e.getKey().toString(),
-                    new AnimatedSpriteLabPBR(aoTable, aoW, aoH,
-                                             sAlphaTable, sRoughnessTable, sMetallicTable, sSssTable,
-                                             sW, sH, hasPerPixelEmissive, hasSss,
-                                             frameIndices, frameTimes, frameColumns));
+                result.put(e.getKey().toString(), AnimatedSpriteLabPBR.fromVariants(e.getKey(), nI, sI));
             } finally {
                 if (nI != null) nI.close();
                 if (sI != null) sI.close();

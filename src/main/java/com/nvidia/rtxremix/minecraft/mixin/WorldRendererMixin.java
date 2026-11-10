@@ -1,20 +1,20 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.weather.RemixWeatherRenderer;
 import com.nvidia.rtxremix.minecraft.terrain.visibility.BuiltChunkStorageSectionAccess;
-import com.nvidia.rtxremix.minecraft.terrain.visibility.BuiltChunkArrayIterator;
 import com.nvidia.rtxremix.minecraft.terrain.capture.RegionBuilderRelease;
-import com.nvidia.rtxremix.minecraft.terrain.capture.BlockQuadEmitter;
 import com.nvidia.rtxremix.minecraft.terrain.WorldRendererTerrainAccess;
-import com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter;
-import com.nvidia.rtxremix.minecraft.terrain.ChunkBuilderBlockEntityAccess;
 import com.nvidia.rtxremix.minecraft.sky.WorldRendererStarAccess;
 import com.nvidia.rtxremix.minecraft.profiling.WorldRendererProfilingAccess;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
+import com.nvidia.rtxremix.minecraft.profiling.PendingUploadsAccess;
 import com.nvidia.rtxremix.minecraft.cloud.WorldRendererCloudAccess;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import com.nvidia.rtxremix.minecraft.LevelExtractorAccess;
@@ -22,34 +22,32 @@ import com.nvidia.rtxremix.minecraft.RemixRenderer;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.vertex.VertexConsumer;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.longs.LongSets;
-import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
 import it.unimi.dsi.fastutil.objects.ObjectArrayList;
-import it.unimi.dsi.fastutil.objects.ObjectListIterator;
 import org.jetbrains.annotations.Nullable;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.Redirect;
-import org.spongepowered.asm.mixin.injection.Slice;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Comparator;
-import java.util.SortedSet;
+import com.nvidia.rtxremix.minecraft.entity.RemixOutlineCapture;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
+import net.minecraft.client.renderer.state.level.BlockBreakingRenderState;
+import net.minecraft.world.level.block.RenderShape;
+import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
+import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.client.renderer.state.level.LevelRenderState;
 import net.minecraft.client.renderer.state.level.ParticlesRenderState;
 import net.minecraft.client.renderer.ViewArea;
@@ -58,9 +56,7 @@ import net.minecraft.client.renderer.chunk.RenderRegionCache;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.SectionPos;
-import net.minecraft.server.level.BlockDestructionProgress;
 import net.minecraft.util.profiling.ProfilerFiller;
-import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.chunk.LevelChunk;
 import net.minecraft.world.level.lighting.LevelLightEngine;
 
@@ -87,8 +83,6 @@ import net.minecraft.world.level.lighting.LevelLightEngine;
 public abstract class WorldRendererMixin
         implements WorldRendererCloudAccess, WorldRendererProfilingAccess,
         WorldRendererStarAccess, WorldRendererTerrainAccess {
-    private static final int rtxremix$BLOCK_ENTITY_CHUNK_LIST_INITIAL_CAPACITY = 32_768;
-
     private static final ThreadLocal<ArrayDeque<ProfileScope>> rtxremix$renderScope = new ThreadLocal<>();
     private static final ThreadLocal<ArrayDeque<ProfileScope>> rtxremix$setupTerrainScope = new ThreadLocal<>();
     private static final ThreadLocal<ArrayDeque<ProfileScope>> rtxremix$updateChunksScope = new ThreadLocal<>();
@@ -116,12 +110,9 @@ public abstract class WorldRendererMixin
     private int rtxremix$renderLayerSkips;
     private int rtxremix$phaseRenderLayerCallsStart;
     private int rtxremix$phaseRenderLayerSkipsStart;
-    private int rtxremix$blockEntityChunkScanCount = -1;
-    private int rtxremix$blockEntityChunkCount = -1;
-    private SectionRenderDispatcher.RenderSection[] rtxremix$blockEntityChunks =
-            new SectionRenderDispatcher.RenderSection[rtxremix$BLOCK_ENTITY_CHUNK_LIST_INITIAL_CAPACITY];
-    private int rtxremix$blockEntityChunkBufferUsed;
-    private final BuiltChunkArrayIterator rtxremix$blockEntityChunkIterator = new BuiltChunkArrayIterator();
+    private int rtxremix$entityCount;
+    private int rtxremix$blockEntityCount;
+    private int rtxremix$globalBlockEntityCount;
     @Shadow
     private net.minecraft.client.renderer.SkyRenderer skyRenderer;
 
@@ -262,13 +253,47 @@ public abstract class WorldRendererMixin
         return resident;
     }
 
-    // TODO(1.21.11): WorldRenderer.render no longer calls renderEntity(...); entities are
-    // extracted into render states and submitted through OrderedRenderCommandQueue. In-place
-    // entity capture (with its outline-only vanilla fallback) is disabled here.
+    private final RemixOutlineCapture rtxremix$entityOutlines = new RemixOutlineCapture();
 
-    // TODO(26.2): the block-breaking crack is now submitted as submitBreakingBlockModel from
-    // LevelRenderer.submitBlockDestroyAnimation over extracted BlockBreakingRenderStates; the
-    // in-place Remix crack capture (RemixRenderer.renderBlockDamageInPlace) is not hooked.
+    @WrapOperation(method = "submitEntities", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/entity/EntityRenderDispatcher;submit("
+                    + "Lnet/minecraft/client/renderer/entity/state/EntityRenderState;"
+                    + "Lnet/minecraft/client/renderer/state/level/CameraRenderState;DDD"
+                    + "Lcom/mojang/blaze3d/vertex/PoseStack;"
+                    + "Lnet/minecraft/client/renderer/SubmitNodeCollector;)V"))
+    private void rtxremix$captureEntityInPlace(EntityRenderDispatcher dispatcher, EntityRenderState state,
+                                             CameraRenderState camera, double x, double y, double z,
+                                             PoseStack matrices, SubmitNodeCollector queue,
+                                             Operation<Void> original) {
+        RtxRemixMod mod = RtxRemixMod.getInstance();
+        boolean captured = mod != null && mod.getRenderer() != null
+                && mod.getRenderer().renderEntityInPlace(state, camera);
+        if (!captured) {
+            original.call(dispatcher, state, camera, x, y, z, matrices, queue);
+        } else if (levelRenderState.shouldShowEntityOutlines && state.appearsGlowing()) {
+            try {
+                original.call(dispatcher, state, camera, x, y, z, matrices, rtxremix$entityOutlines.queue());
+                rtxremix$entityOutlines.forwardTo(queue);
+            } finally {
+                rtxremix$entityOutlines.discard();
+            }
+        }
+    }
+
+    @Inject(method = "submitBlockDestroyAnimation", at = @At("HEAD"), cancellable = true)
+    private void rtxremix$captureBlockDamage(PoseStack matrices, SubmitNodeCollector queue,
+                                           LevelRenderState state, CallbackInfo ci) {
+        if (!RtxRemixMod.isRemixWorldRendering()) return;
+        RemixRenderer renderer = RtxRemixMod.getInstance().getRenderer();
+        for (BlockBreakingRenderState damage : state.blockBreakingRenderStates) {
+            if (damage.blockState().getRenderShape() == RenderShape.MODEL) {
+                renderer.renderBlockDamageInPlace(damage);
+            }
+        }
+        // This method only submits CPU geometry and balances its local pose stack.
+        // Fabric's replacement of submitBreakingBlockModel remains intact for vanilla rendering.
+        ci.cancel();
+    }
 
     @Inject(method = "render", at = @At("HEAD"))
     private void rtxremix$renderHead(CallbackInfo ci) {
@@ -278,12 +303,16 @@ public abstract class WorldRendererMixin
                 "Java.WorldRenderer.render.ms");
         rtxremix$renderLayerCalls = 0;
         rtxremix$renderLayerSkips = 0;
-        rtxremix$blockEntityChunkScanCount = -1;
-        rtxremix$blockEntityChunkCount = -1;
+        rtxremix$entityCount = levelRenderState.entityRenderStates.size();
+        rtxremix$blockEntityCount = levelRenderState.blockEntityRenderStates.size();
+        ClientLevel level = Minecraft.getInstance().level;
+        rtxremix$globalBlockEntityCount = level == null ? 0 : level.getGloballyRenderedBlockEntities().size();
         rtxremix$transitionProfilerPhase("preamble");
         RtxRemixMod mod = RtxRemixMod.getInstance();
         if (mod != null && mod.getRenderer() != null) {
             mod.getRenderer().beginEntityFrame();
+            RemixWeatherRenderer weather = mod.getRenderer().getWeatherRenderer();
+            if (weather != null) weather.beginCaptureFrame();
         }
     }
 
@@ -309,10 +338,6 @@ public abstract class WorldRendererMixin
         rtxremix$transitionProfilerPhase(name);
     }
 
-    // TODO(1.21.11): WorldRenderer.renderLayer was replaced by renderBlockLayers, which returns
-    // a SectionRenderState drawn later by the frame graph; vanilla terrain layers are no longer
-    // skipped while Remix renders the world.
-
     // 26.2: particles are submitted as features from submitFeatures, not drawn in their own pass.
     @WrapOperation(
             method = "submitFeatures",
@@ -327,6 +352,12 @@ public abstract class WorldRendererMixin
             Operation<Void> original) {
         if (!RtxRemixMod.isRemixWorldRendering()) {
             original.call(particles, collector, camera);
+        } else {
+            for (var group : particles.particles) {
+                if (!(group instanceof net.minecraft.client.renderer.state.level.QuadParticleRenderState)) {
+                    RtxRemixMod.getInstance().getRenderer().renderParticleGroupInPlace(group, camera);
+                }
+            }
         }
     }
 
@@ -340,13 +371,6 @@ public abstract class WorldRendererMixin
             ci.cancel();
         }
     }
-
-    // TODO(1.21.11): renderWeather now hands WeatherRendering a frame-graph pass with
-    // RenderPipelines; the old setShaderTexture/drawWithGlobalProgram capture points are gone, so
-    // rain and snow are not captured for RemixWeatherRenderer.
-
-    // TODO(26.2): block entities are walked in LevelExtractor.extractVisibleBlockEntities; the
-    // narrowing to sections that hold block entities is not ported.
 
     // 26.2: the section occlusion update at the end of LevelRenderer.render stands in for setupTerrain.
     @Inject(
@@ -375,6 +399,7 @@ public abstract class WorldRendererMixin
 
     @Inject(method = "compileSections", at = @At("HEAD"))
     private void rtxremix$updateChunksHead(CameraRenderState camera, CallbackInfo ci) {
+        if (!ProfileScope.isDeepProfilingEnabled()) return;
         int installCount = rtxremix$chunksToUpload();
         int dirtyLeaves = rtxremix$chunksToBatch();
         if (installCount >= 0) {
@@ -440,6 +465,7 @@ public abstract class WorldRendererMixin
             ),
             require = 0)
     private void rtxremix$beforeChunkUpload(CallbackInfo ci) {
+        if (!ProfileScope.isDeepProfilingEnabled()) return;
         rtxremix$open(
                 rtxremix$uploadScope,
                 "WorldRenderer.updateChunks.upload",
@@ -460,8 +486,8 @@ public abstract class WorldRendererMixin
     }
 
     private int rtxremix$chunksToUpload() {
-        // TODO(26.2): SectionRenderDispatcher no longer reports a pending-upload count.
-        return -1;
+        return sectionRenderDispatcher == null ? -1
+                : ((PendingUploadsAccess) sectionRenderDispatcher).rtxremix$pendingUploads();
     }
 
     private int rtxremix$chunksToBatch() {
@@ -496,25 +522,30 @@ public abstract class WorldRendererMixin
         rtxremix$closeProfilerPhase();
     }
 
+    @Override
+    public void rtxremix$recordTerrainDraw(boolean skipped) {
+        rtxremix$renderLayerCalls++;
+        if (skipped) rtxremix$renderLayerSkips++;
+    }
+
     private void rtxremix$annotateProfilerPhase(ProfileScope scope) {
         if (visibleSections != null) {
             int visibleChunks = visibleSections.size();
             scope.visibleChunkCount(visibleChunks);
             scope.captureCount(visibleChunks);
         }
-        // TODO(1.21.11): regularEntityCount, blockEntityCount and noCullingBlockEntities were
-        // removed from WorldRenderer; those counters report -1.
-        scope.entityCount(-1);
-        scope.blockEntityCount(-1);
-        scope.blockCount(-1);
-        scope.noCullBlockEntityCount(-1);
+        scope.entityCount(rtxremix$entityCount);
+        scope.blockEntityCount(rtxremix$blockEntityCount);
+        scope.blockCount(rtxremix$blockEntityCount);
+        scope.noCullBlockEntityCount(rtxremix$globalBlockEntityCount);
         ClientLevel level = Minecraft.getInstance().level;
         scope.blockBreakingCount(level == null ? -1 : level.destructionProgress().size());
         scope.renderLayerCalls(rtxremix$renderLayerCalls - rtxremix$phaseRenderLayerCallsStart);
         scope.renderLayerSkips(rtxremix$renderLayerSkips - rtxremix$phaseRenderLayerSkipsStart);
         if ("WorldRenderer.phase.blockentities".equals(rtxremix$profilerPhaseName)) {
-            scope.scannedChunkCount(rtxremix$blockEntityChunkScanCount);
-            scope.blockEntityChunkCount(rtxremix$blockEntityChunkCount);
+            LevelExtractorAccess extractor = (LevelExtractorAccess) Minecraft.getInstance().levelExtractor;
+            scope.scannedChunkCount(extractor.rtxremix$blockEntitySectionScans());
+            scope.blockEntityChunkCount(extractor.rtxremix$blockEntitySectionCount());
         }
     }
 
@@ -580,10 +611,4 @@ public abstract class WorldRendererMixin
         }
     }
 
-    private static RemixWeatherRenderer rtxremix$getWeatherRenderer() {
-        if (!RtxRemixMod.isRemixWorldRendering()) {
-            return null;
-        }
-        return RtxRemixMod.getInstance().getRenderer().getWeatherRenderer();
-    }
 }

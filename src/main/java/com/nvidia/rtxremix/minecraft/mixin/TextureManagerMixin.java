@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
@@ -16,21 +19,19 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Intercepts {@link TextureManager#registerForNextReload} to track dynamic textures
+ * Intercepts {@code TextureManager.register} to track dynamic textures
  * for pixel capture across every upload.
  *
- * <p>Handles three texture types:
+ * <p>Handles dynamic images and glyph pages:
  * <ul>
  *   <li>{@link DynamicTexture}: if the image is already available at
  *       registration time, pixels are captured immediately; the texture remains
- *       tracked for later mutable uploads such as maps.</li>
- *   <li>{@code PlayerSkinTexture} (1.21.1 only; 1.21.11 skins are
- *       {@code NativeImageBackedTexture}s): always async (image downloads from Mojang CDN),
- *       so {@code PlayerSkinTextureMixin} can capture the uploaded image.</li>
+ *       tracked for later mutable uploads such as maps. Downloaded skins and capes
+ *       are also registered as dynamic textures in 26.2.</li>
  *   <li>Font glyph pages, which {@code GlyphAtlasTextureMixin} gives a
  *       {@link GlyphPageMirror}: the mirror is registered under the page's id so the
- *       submitter reads it like any other dynamic texture. {@code FontStorage}
- *       registers a page before uploading its first glyph.</li>
+ *       submitter reads it like any other dynamic texture. Vanilla registers a
+ *       page before uploading its first glyph.</li>
  * </ul>
  */
 @Mixin(TextureManager.class)

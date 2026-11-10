@@ -57,6 +57,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.util.List;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
@@ -210,6 +211,10 @@ public class SkyRenderer {
     private final float[] cloudMoonIlluminance = new float[3];
     private final float[] cloudSunDirection = new float[3];
     private final float[] cloudMoonDirection = new float[3];
+    /** Refilled every frame rather than allocated, since the compositor runs every frame. */
+    private final CloudSkyCompositor.Inputs cloudInputs = new CloudSkyCompositor.Inputs();
+    /** The band-per-frame upload of the held cloud readback into a dome texture of the same size. */
+    private final DomeBandScan cloudDomeScan = new DomeBandScan();
     /** Whether the published dome texture holds the clouds, so turning them off republishes the bare sky. */
     private boolean domeShowsClouds;
     /** This frame's storm-dome opacity before the volumetric clouds thin it. */
@@ -603,12 +608,12 @@ public class SkyRenderer {
                 pixels = cloudCompositor.update(
                         atmosphericGenerator.finalSkyTexture(),
                         atmosphericGenerator.transmittanceLutTexture(),
-                        new CloudSkyCompositor.Inputs(
+                        cloudInputs.set(
                                 cloudSunDirection, cloudMoonDirection,
                                 cloudSunIlluminance, cloudMoonIlluminance,
                                 lightState.sunAngularRadius(), lightState.moonAngularRadius(),
-                                 cameraPos.x, cameraPos.y, cameraPos.z,
-                                 dayTime, DaylightSky.isPhysicalAtmosphere(), DaylightSky.skyFill()),
+                                cameraPos.x, cameraPos.y, cameraPos.z,
+                                dayTime, DaylightSky.isPhysicalAtmosphere(), DaylightSky.skyFill()),
                         atmosphericMean);
             }
             if (pixels != null) {
@@ -619,9 +624,10 @@ public class SkyRenderer {
                 atmosphericMeanR = lerp(atmosphericMean[0], atmosphericMeanR, keep);
                 atmosphericMeanG = lerp(atmosphericMean[1], atmosphericMeanG, keep);
                 atmosphericMeanB = lerp(atmosphericMean[2], atmosphericMeanB, keep);
-                uploadDome(api, pixels, cloudCompositor.width(), cloudCompositor.height(),
-                        cloudCompositor.outputBytes());
+                publishCloudReadback(api, pixels);
                 domeShowsClouds = true;
+            } else {
+                continueCloudDomeScan(api);
             }
             // Until the first cloud readback lands, the bare sky keeps the dome.
             return domeShowsClouds;
@@ -633,7 +639,89 @@ public class SkyRenderer {
         }
     }
 
+    /**
+     * Publishes a freshly read-back cloud dome. A texture of another size, or none, is created
+     * from the whole image at once and the readback released straight away, since the texture
+     * then owns a copy. Otherwise the image is uploaded a quarter at a time over the next frames.
+     *
+     * <p>Why bands: a dome is 16 MB at the default quality (38 MB at Ultra), refreshed every
+     * other tick, and one {@code UpdateTextureFromMemory} of all of it, with the mip chain it
+     * regenerates, stalled the render thread for one frame in every few: a steady 10 Hz hitch,
+     * which frame generation then stretches across its interpolated frames. A quarter per frame
+     * spreads the same bytes evenly; the runtime regenerates mips only over each band.
+     *
+     * <p>A readback that lands while a scan is still going continues the scan from the band it
+     * had reached, now reading the newer image, and restarts the count, so every band shows an
+     * image no older than four frames behind the newest readback.
+     */
+    private void publishCloudReadback(RemixAPI api, ByteBuffer pixels) {
+        int width = cloudCompositor.width();
+        int height = cloudCompositor.height();
+        if (!domeTextureMatches(width, height)) {
+            // uploadDome stops any scan; the copy it makes runs before the next update() can
+            // enqueue another readback, so the release cannot race it.
+            uploadDome(api, pixels, width, height, cloudCompositor.outputBytes());
+            cloudCompositor.releaseHeldReadback();
+            return;
+        }
+        cloudDomeScan.retarget(pixels, width, height);
+        uploadNextCloudDomeBand(api);
+    }
+
+    /**
+     * Uploads the next band of the held readback on a frame without a new one. Abandons the
+     * scan when the compositor no longer holds that readback (a restart discarded its scene,
+     * and the GPU may already be writing a new one into the same memory) or the texture it
+     * was writing into is gone; the next readback starts over.
+     */
+    private void continueCloudDomeScan(RemixAPI api) {
+        if (!cloudDomeScan.active()) {
+            return;
+        }
+        if (!cloudCompositor.holdsReadback()
+                || !domeTextureMatches(cloudDomeScan.width(), cloudDomeScan.height())) {
+            stopCloudDomeScan();
+            return;
+        }
+        uploadNextCloudDomeBand(api);
+    }
+
+    private void uploadNextCloudDomeBand(RemixAPI api) {
+        int width = cloudDomeScan.width();
+        int height = cloudDomeScan.height();
+        int band = cloudDomeScan.nextBand();
+        ByteBuffer view = cloudDomeScan.bandView(band);
+        int startRow = DomeBandScan.bandStartRow(height, band);
+        try (ProfileScope ignored =
+                ProfileScope.begin("Sky.Atmosphere.Upload").bytes(view.capacity())) {
+            atmosphericTexturePatch.dstX = 0;
+            atmosphericTexturePatch.dstY = startRow;
+            atmosphericTexturePatch.width = width;
+            atmosphericTexturePatch.height = DomeBandScan.bandStartRow(height, band + 1) - startRow;
+            atmosphericTexturePatch.rowPitch = width * 4 * Short.BYTES;
+            updateAtmosphericTexture(api, view);
+        }
+        if (!cloudDomeScan.active()) {
+            stopCloudDomeScan();
+        }
+    }
+
+    /** Ends any band scan and returns its readback to the compositor's ring. */
+    private void stopCloudDomeScan() {
+        cloudDomeScan.stop();
+        if (cloudCompositor != null) {
+            cloudCompositor.releaseHeldReadback();
+        }
+    }
+
+    private boolean domeTextureMatches(int width, int height) {
+        return skyTextureAsset != null && skyTextureAsset.isAlive()
+                && skyTextureWidth == width && skyTextureHeight == height;
+    }
+
     private void destroyCloudCompositor() {
+        // The band views point into the compositor's mapped buffers, which destroy() unmaps.
+        cloudDomeScan.forgetViews();
         if (cloudCompositor != null) {
             try {
                 cloudCompositor.destroy();
@@ -653,12 +741,18 @@ public class SkyRenderer {
         target[2] = source[2] * inverse;
     }
 
-    /** Uploads an RGBA16F equirect into the dome texture, replacing the texture when its size changed. */
+    /**
+     * Uploads a whole RGBA16F equirect into the dome texture in one call, replacing the texture
+     * when its size changed. The bare atmosphere goes through here every time: at 256 × 128 it
+     * is 256 KB, small enough that splitting it would only delay the sky by frames. A cloud
+     * dome goes through here only to create its texture; same-size cloud updates are banded.
+     */
     private void uploadDome(RemixAPI api, ByteBuffer pixelBuf, int width, int height, int bytes) {
         try (ProfileScope ignored =
                 ProfileScope.begin("Sky.Atmosphere.Upload").bytes(bytes)) {
-            if (skyTextureAsset == null || !skyTextureAsset.isAlive()
-                    || skyTextureWidth != width || skyTextureHeight != height) {
+            if (!domeTextureMatches(width, height)) {
+                // A new texture invalidates any band scan into the old one.
+                stopCloudDomeScan();
                 destroyAsset(skyTextureAsset);
                 ByteBuffer ownedPixels = DirectBufferPool.acquire(bytes);
                 pixelBuf.position(0);
@@ -670,6 +764,8 @@ public class SkyRenderer {
                 skyTextureWidth = width;
                 skyTextureHeight = height;
             } else {
+                atmosphericTexturePatch.dstX = 0;
+                atmosphericTexturePatch.dstY = 0;
                 atmosphericTexturePatch.width = width;
                 atmosphericTexturePatch.height = height;
                 atmosphericTexturePatch.rowPitch = width * 4 * Short.BYTES;
@@ -692,7 +788,13 @@ public class SkyRenderer {
     private void updateAtmosphericTexture(RemixAPI api, ByteBuffer pixelData) {
         atmosphericTexturePatch.pixelData = pixelData;
         atmosphericTextureEntry.handle = skyTextureAsset.getHandle();
-        api.updateTextureFromMemory(atmosphericTextureUpdate);
+        try {
+            api.updateTextureFromMemory(atmosphericTextureUpdate);
+        } finally {
+            // The data is often a view into a mapped readback the compositor reuses or unmaps;
+            // keep no reference to it past the call that reads it.
+            atmosphericTexturePatch.pixelData = null;
+        }
     }
 
     private void publishCombinedSkyAmbient(
@@ -1246,6 +1348,121 @@ public class SkyRenderer {
         return t * t * (3.0f - 2.0f * t);
     }
 
+    /**
+     * Which band of the held cloud readback goes up next, and the per-buffer band views.
+     *
+     * <p>The native upload reads a direct buffer from its base address, ignoring its position,
+     * so a band needs a buffer that starts at the band: a slice. Slicing allocates, and the
+     * compositor hands back the same few mapped buffers for its whole life, so each buffer's
+     * views are built the first time it is seen and reused after; the frame path allocates
+     * nothing once every ring slot has been seen. Pure bookkeeping, no Remix or GL calls.
+     */
+    static final class DomeBandScan {
+        static final int BANDS = 4;
+
+        private final ByteBuffer[] cachedSources = new ByteBuffer[CloudSkyCompositor.READBACK_RING_SIZE];
+        private final ByteBuffer[][] cachedViews =
+                new ByteBuffer[CloudSkyCompositor.READBACK_RING_SIZE][BANDS];
+        private int cacheWidth;
+        private int cacheHeight;
+        private int nextCacheSlot;
+
+        private ByteBuffer[] views;
+        private int width;
+        private int height;
+        private int cursor;
+        private int remaining;
+
+        /** First row of a band; {@code band == BANDS} gives the height, so bands tile every row. */
+        static int bandStartRow(int height, int band) {
+            return (int) ((long) height * band / BANDS);
+        }
+
+        /**
+         * Points the scan at a new image and owes every band again, continuing from the band
+         * the scan had reached so the bands still due under the older image go first.
+         */
+        void retarget(ByteBuffer source, int width, int height) {
+            if (width != cacheWidth || height != cacheHeight) {
+                forgetViews();
+                cacheWidth = width;
+                cacheHeight = height;
+            }
+            views = viewsFor(source);
+            this.width = width;
+            this.height = height;
+            remaining = BANDS;
+        }
+
+        boolean active() {
+            return remaining > 0;
+        }
+
+        int width() { return width; }
+        int height() { return height; }
+
+        /** The band to upload now, counting it as done; only valid while {@link #active()}. */
+        int nextBand() {
+            if (remaining <= 0) {
+                throw new IllegalStateException("No dome band scan is active");
+            }
+            int band = cursor;
+            cursor = (cursor + 1) % BANDS;
+            remaining--;
+            return band;
+        }
+
+        /** The current image's view of one band. */
+        ByteBuffer bandView(int band) {
+            return views[band];
+        }
+
+        /** Ends the scan and drops its image, keeping the cached views for the next one. */
+        void stop() {
+            remaining = 0;
+            views = null;
+        }
+
+        /**
+         * Ends any scan and drops every cached view, for when the buffers they slice are
+         * unmapped or the image size changes.
+         */
+        void forgetViews() {
+            stop();
+            for (int slot = 0; slot < cachedSources.length; slot++) {
+                cachedSources[slot] = null;
+                Arrays.fill(cachedViews[slot], null);
+            }
+            nextCacheSlot = 0;
+        }
+
+        private ByteBuffer[] viewsFor(ByteBuffer source) {
+            for (int slot = 0; slot < cachedSources.length; slot++) {
+                if (cachedSources[slot] == source) {
+                    return cachedViews[slot];
+                }
+            }
+            // The cache has a slot per readback buffer, so with one compositor's buffers this
+            // replaces only empty slots; a new compositor comes with forgetViews().
+            int slot = nextCacheSlot;
+            nextCacheSlot = (nextCacheSlot + 1) % cachedSources.length;
+            int rowBytes = rowBytes(cacheWidth);
+            ByteBuffer[] slotViews = cachedViews[slot];
+            for (int band = 0; band < BANDS; band++) {
+                int start = bandStartRow(cacheHeight, band);
+                int end = bandStartRow(cacheHeight, band + 1);
+                // Absolute slice: independent of the position and limit the compositor moves.
+                slotViews[band] = source.slice(start * rowBytes, (end - start) * rowBytes);
+            }
+            cachedSources[slot] = source;
+            return slotViews;
+        }
+
+        private static int rowBytes(int texels) {
+            return texels * 4 * Short.BYTES;
+        }
+    }
+
     record WeatherDomeState(float opacity, float intensity) {
         private static final WeatherDomeState CLEAR = new WeatherDomeState(0.0f, 0.0f);
     }
@@ -1333,6 +1550,7 @@ public class SkyRenderer {
         skyTextureHeight = 0;
         publishedDomeTextureHandle = 0L;
         domeShowsClouds = false;
+        stopCloudDomeScan();
         if (cloudCompositor != null) {
             cloudCompositor.invalidate();
         }

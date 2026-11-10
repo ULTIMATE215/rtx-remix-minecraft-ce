@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build Minecraft 26.2
+
+on:
+  push:
+    branches: [mc/26.2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: minecraft-26.2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  package:
+    if: github.ref == 'refs/heads/mc/26.2'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read Minecraft 26.2 target
+        id: props
+        shell: pwsh
+        run: |
+          $props = @{}
+          Get-Content gradle.properties | Where-Object { $_ -match '^\s*([\w.]+)\s*=\s*(.*)$' } |
+            ForEach-Object { $props[$Matches[1]] = $Matches[2].Trim() }
+          if ($props.minecraft_version -ne '26.2') { throw 'This workflow only builds Minecraft 26.2' }
+          "java=$($props.release_java_version)" >> $env:GITHUB_OUTPUT
+          "mod=$($props.mod_version)" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: ${{ steps.props.outputs.java }}
+          cache: gradle
+
+      - name: Build Windows x64 installer
+        shell: pwsh
+        run: .\gradlew.bat releaseArchive -Prelease -Parch=win64 -x test --no-daemon --stacktrace
+
+      - name: Upload installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rtx-remix-${{ steps.props.outputs.mod }}-mc26.2-win64
+          path: build/distributions/*.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

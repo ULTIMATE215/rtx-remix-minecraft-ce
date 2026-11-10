@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 import os
 import subprocess
@@ -8,7 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from rtx_tools import cli
+from rtx_tools import cli, prism
 from rtx_tools.benchmark import util
 
 pytestmark = pytest.mark.usefixtures("isolated_tools_config")
@@ -28,6 +31,7 @@ def migration(monkeypatch: pytest.MonkeyPatch) -> Mock:
 
 @pytest.fixture
 def installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migration: Mock) -> tuple[Path, Path]:
+    fabric_api_version = prism.installer_constant("FABRIC_API_VERSION")
     project = tmp_path / "checkout"
     game = tmp_path / "existing game"
     (game / "mods").mkdir(parents=True)
@@ -43,6 +47,7 @@ def installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migration: Moc
         "build/libs/rtx-remix-renderer-9.9.jar": b"older mod",
         "build/libs/rtx-remix-renderer-9.9-SOURCES.jar": b"sources only",
         "packaging/rtx.conf": b"runtime defaults",
+        "packaging/installer.ps1": f"$script:FABRIC_API_VERSION = '{fabric_api_version}'\n".encode(),
         "packaging/rtx-remix/mods/minecraft-logic/weather/rain.conf": b"shipped rain",
         "remix-runtime/textures/overcast_thunderstorm_bc6u.dds": b"overcast texture",
         "remix-runtime/textures/water_normals_flipbook.dds": b"water normals",
@@ -164,7 +169,8 @@ def test_install_warns_about_missing_fabric_api_without_installing_it(installati
 
     output = capsys.readouterr().out
     assert f"WARNING: no fabric-api jar in {game / 'mods'}." in output
-    assert "fabric-api >=0.116.10+1.21.1 (https://modrinth.com/mod/fabric-api)" in output
+    fabric_api_version = prism.installer_constant("FABRIC_API_VERSION")
+    assert f"fabric-api >={fabric_api_version} (https://modrinth.com/mod/fabric-api)" in output
     assert list((game / "mods").glob("fabric-api-*.jar")) == []
 
 

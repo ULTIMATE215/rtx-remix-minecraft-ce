@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.entity;
 
@@ -9,6 +12,8 @@ import com.nvidia.rtxremix.minecraft.texture.ParticleAtlasManager;
 import com.nvidia.rtxremix.minecraft.texture.LabPBRConverter;
 import com.nvidia.rtxremix.minecraft.texture.DynamicTextureCache;
 import com.nvidia.rtxremix.minecraft.texture.BlockTextureManager;
+import com.nvidia.rtxremix.minecraft.texture.AtlasAnimationForwarder;
+import com.nvidia.rtxremix.minecraft.mixin.SpriteContentsAccessor;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
 import com.nvidia.rtxremix.minecraft.mixin.SpriteAtlasAccessor;
 import com.nvidia.rtxremix.minecraft.block.CopperBeaconBlockEntity;
@@ -45,6 +50,8 @@ import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.IOException;
+import java.io.InputStream;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -247,7 +254,7 @@ public class RemixEntitySubmitter {
      * the sprite's UV rectangle, and one cuboid is baked once and painted with many
      * sprites (chest variants, sixteen bed colours, pot sherds, a canvas base), so
      * the mesh is per cuboid and sprite. Identity again: an atlas re-stitch creates
-     * new Sprite objects, and {@code invalidateMaterialTexture} drops every mesh
+     * new TextureAtlasSprite objects, and {@code invalidateMaterialTexture} drops every mesh
      * keyed on that atlas before a stale one could be reached through them.
      *
      * <p>The other components are the things proven to vary for one cuboid within a
@@ -586,6 +593,58 @@ public class RemixEntitySubmitter {
     private final Set<Identifier> resourceMissing = new HashSet<>();
     private LabPBRConverter.VariantCache labPBRVariants;
 
+    /**
+     * Kill switch for off-thread texture-set loading: {@code -Drtxremix.entityTextures.sync=true}
+     * builds every entity texture set on the render thread the frame it is first needed, as
+     * before. Off-thread loading moves the PNG reads, LabPBR decodes, and channel conversion of
+     * a newly seen texture onto {@link #textureLoader}; the price is that the new texture's
+     * layers are missing for the few frames until its set lands, the same gap a downloading
+     * skin already has.
+     */
+    static final boolean SYNC_ENTITY_TEXTURES = Boolean.getBoolean("rtxremix.entityTextures.sync");
+    /**
+     * Texture sets turned into Remix textures per frame. A set is up to eight full-size
+     * uploads, so a burst of new entity types, such as walking into a village, spreads over
+     * a few frames rather than landing in one.
+     */
+    private static final int MAX_TEXTURE_SETS_PER_FRAME = 2;
+    /** Stops a frame's texture-set creation early once this much time has gone into it. */
+    private static final long TEXTURE_SET_FRAME_BUDGET_NANOS = 2_000_000L;
+    /**
+     * Texture sets being prepared or waiting to be created at once. Each holds its channels
+     * on the heap until created, so this also caps the memory a burst can pin.
+     */
+    private static final int MAX_TEXTURE_SETS_IN_FLIGHT = 8;
+    /**
+     * Prepares texture sets off the render thread. Only CPU data crosses back: every Remix
+     * texture and material is still created here, on the render thread, by
+     * {@link #createLoadedTextureSets}.
+     */
+    private final EntityTextureLoader<Identifier, PreparedTextureSet> textureLoader =
+            EntityTextureLoader.withDaemonThread(MAX_TEXTURE_SETS_IN_FLIGHT, "RTX Remix entity textures");
+    /** Held so the per-frame drain passes a sink without allocating one. */
+    private final EntityTextureLoader.Sink<Identifier, PreparedTextureSet> loadedTextureSink =
+            this::acceptLoadedTextureSet;
+    /**
+     * The loader thread's LabPBR variant index and the loader generation it was built for.
+     * The index walks every pack, so the loader builds it once per generation when the render
+     * thread has none to lend, and hands it back with its result for the render thread to adopt.
+     */
+    private volatile LoaderVariants loaderVariants;
+
+    private record LoaderVariants(long generation, LabPBRConverter.VariantCache cache) {}
+
+    /** Albedo decoded from a resource pack, as tightly packed RGBA bytes. */
+    private record DecodedImage(byte[] pixels, int width, int height) {}
+
+    /**
+     * The render-thread-side state of a runtime-stitched atlas: its stitched albedo and
+     * where each sprite sits. Captured on the render thread because the sprites' images
+     * are freed by a resource reload there; the LabPBR work that follows reads only this.
+     */
+    private record AtlasSnapshot(byte[] pixels, int width, int height,
+                                 Identifier[] spriteIds, int[] spriteRects, boolean[] animated) {}
+
     // A captured layer with no material is dropped silently, which is
     // indistinguishable from an entity that simply is not there. Most gaps are
     // transient though: the block atlas has no materials until
@@ -612,16 +671,64 @@ public class RemixEntitySubmitter {
         RemixTexture sssAlbedo;
         boolean hasPBR;
         final List<RemixTexture> ownedTextures = new ArrayList<>();
+        AtlasAnimationForwarder.Target animation;
 
         void own(RemixTexture texture) {
             if (texture != null) ownedTextures.add(texture);
         }
 
         void destroy() {
+            if (animation != null) {
+                animation.close();
+                animation = null;
+            }
             for (RemixTexture texture : ownedTextures) {
                 if (texture != null && !texture.isDeleted()) texture.destroy();
             }
             ownedTextures.clear();
+        }
+    }
+
+    /**
+     * Every channel of an entity texture set as heap data, before any Remix texture
+     * exists. Built by {@link #preparePlainTextureSet} or {@link #prepareAtlasTextureSet},
+     * on the loader thread or inline, and turned into an {@link EntityTextureSet} on the
+     * render thread by {@link #uploadPreparedTextureSet}. A null channel is not uploaded.
+     */
+    private static final class PreparedTextureSet {
+        /** The texture id for a plain set, {@code atlas_<id>} for an atlas; names the uploads. */
+        final String name;
+        final boolean atlas;
+        final byte[] albedo;
+        final int width;
+        final int height;
+        byte[] normal;
+        byte[] heightMap;
+        byte[] roughness;
+        byte[] metallic;
+        byte[] emissive;
+        byte[] sssThickness;
+        byte[] sssAlbedo;
+        boolean hasPBR;
+        int spriteCount;
+        Set<Identifier> spriteIds = Set.of();
+        Map<String, BlockTextureManager.AnimatedSpriteLabPBR> animationPbr = Map.of();
+        /** The {@link DynamicTextureCache} version the albedo was copied from, or 0. */
+        long dynamicVersion;
+        /** The variant index the loader used, offered to the render thread to adopt. */
+        LabPBRConverter.VariantCache variants;
+
+        PreparedTextureSet(String name, boolean atlas, byte[] albedo, int width, int height) {
+            this.name = name;
+            this.atlas = atlas;
+            this.albedo = albedo;
+            this.width = width;
+            this.height = height;
+        }
+
+        /** The upload's name, in the form each kind of set has always logged under. */
+        String channelName(String channel) {
+            return atlas ? name + "_" + channel : "entity_" + channel + "_" + name;
         }
     }
 
@@ -698,6 +805,21 @@ public class RemixEntitySubmitter {
         retainedEntityParts.beginFrame();
         lastDrawCount = 0;
         lastMeshCreateCount = 0;
+        createLoadedTextureSets();
+    }
+
+    /**
+     * Creates the Remix textures for texture sets the loader has finished preparing, within
+     * the per-frame budget. Runs as the frame opens, before any capture asks for a material,
+     * so a set that lands here is used the same frame. A frame with nothing finished costs
+     * one empty-queue check and allocates nothing.
+     */
+    private void createLoadedTextureSets() {
+        if (!textureLoader.hasCompleted()) return;
+        try (ProfileScope ignored = ProfileScope.begin("Entity createTextureSets")) {
+            textureLoader.drain(MAX_TEXTURE_SETS_PER_FRAME, TEXTURE_SET_FRAME_BUDGET_NANOS,
+                    System::nanoTime, loadedTextureSink);
+        }
     }
 
     /**
@@ -873,7 +995,9 @@ public class RemixEntitySubmitter {
         // they are held back until the run ends; see submitCanvasPatterns.
         int canvasFirstPart = 0;
         int canvasPatternCount = 0;
-        int textureCategoryFlags = additionalCategoryFlagsForTexture(texId);
+        int textureCategoryFlags = additionalCategoryFlagsForTexture(texId)
+                | (renderLayer.pipeline() == net.minecraft.client.renderer.RenderPipelines.CRUMBLING
+                        ? InstanceCategoryBit.DECAL_STATIC : 0);
         int patternCategoryFlags = baseCategoryFlags | textureCategoryFlags
                 | policy.categoryFlags(PatternCanvasRole.PATTERN);
         for (int part = 0, partCount = consumer.getPartCount(); part < partCount; part++) {
@@ -930,7 +1054,8 @@ public class RemixEntitySubmitter {
     static RenderLayerUtils.SurfaceMode atlasSurfaceMode(Identifier texId,
                                                          RenderLayerUtils.SurfaceMode surfaceMode,
                                                          int blockItemLayer) {
-        if (!BlockTextureManager.BLOCK_ATLAS_ID.equals(texId)) {
+        if (!BlockTextureManager.BLOCK_ATLAS_ID.equals(texId)
+                && !TextureAtlas.LOCATION_ITEMS.equals(texId)) {
             return surfaceMode;
         }
         if (blockItemLayer == BlockTextureManager.L_GLASS) {
@@ -2087,6 +2212,17 @@ public class RemixEntitySubmitter {
     }
 
     private void ensureMaterial(EntityMaterialKey materialKey) {
+        ensureMaterial(materialKey, !SYNC_ENTITY_TEXTURES);
+    }
+
+    /**
+     * Caches a material for {@code materialKey}, creating its texture set first if needed.
+     *
+     * @param loadOffThread whether a missing texture set may be prepared on the loader
+     *                      thread, leaving the key materialless until it lands; false builds
+     *                      it here and now
+     */
+    private void ensureMaterial(EntityMaterialKey materialKey, boolean loadOffThread) {
         if (materialKey == null || materialKey.textureId() == null) return;
         RemixMaterial cached = materialCache.get(materialKey);
         if (cached != null && !cached.isDeleted()) return;
@@ -2124,6 +2260,7 @@ public class RemixEntitySubmitter {
         try {
             EntityTextureSet textures = textureSets.get(textureId);
             if (textures == null) {
+                if (loadOffThread && requestTextureSetOffThread(textureId)) return;
                 textures = RenderLayerUtils.UNTEXTURED_LAYER_ID.equals(textureId)
                         ? createUntexturedTextureSet()
                         : isAtlasTexture(textureId)
@@ -2131,6 +2268,8 @@ public class RemixEntitySubmitter {
                         : tryCreateTextureSet(textureId);
                 if (textures == null) return;
                 textureSets.put(textureId, textures);
+                // A set built here overtakes any request still preparing the same texture.
+                textureLoader.cancel(textureId);
             }
 
             RemixMaterial material = createMaterial(materialKey, textures);
@@ -2147,19 +2286,9 @@ public class RemixEntitySubmitter {
      * so the caller retries next frame instead of caching a set with no albedo.
      */
     private EntityTextureSet createUntexturedTextureSet() {
-        EntityTextureSet textures = new EntityTextureSet();
-        try {
-            populateTextureSet(textures, RenderLayerUtils.UNTEXTURED_LAYER_ID.toString(),
-                    UNTEXTURED_WHITE_PIXEL.clone(), 1, 1, null, null, null);
-        } catch (RuntimeException e) {
-            textures.destroy();
-            throw e;
-        }
-        if (textures.albedo == null) {
-            textures.destroy();
-            return null;
-        }
-        return textures;
+        return uploadPreparedTextureSet(preparePlainTextureSet(
+                RenderLayerUtils.UNTEXTURED_LAYER_ID.toString(),
+                UNTEXTURED_WHITE_PIXEL.clone(), 1, 1, null, null));
     }
 
     private EntityTextureSet tryCreateTextureSet(Identifier textureId) throws Exception {
@@ -2180,11 +2309,10 @@ public class RemixEntitySubmitter {
         byte[] pixels;
         DynamicTextureCache.Pixels cachedPixels = null;
         if (resource.isPresent()) {
-            try (var image = NativeImage.read(resource.get().open())) {
-                width = image.getWidth();
-                height = image.getHeight();
-                pixels = abgrToRGBA(image, width, height);
-            }
+            DecodedImage image = decodeRGBA(resource.get());
+            width = image.width();
+            height = image.height();
+            pixels = image.pixels();
         } else {
             // A downloaded skin reaches the cache when its texture uploads. Until then the
             // entity renders with the default and picks the skin up on a later frame.
@@ -2199,37 +2327,208 @@ public class RemixEntitySubmitter {
         }
 
         Identifier spriteId = deriveLabPBRSpriteId(textureId);
-        NativeImage nImg = loadVariant(rm, spriteId, "_n");
-        NativeImage sImg = loadVariant(rm, spriteId, "_s");
-        NativeImage sssImg = loadVariant(rm, spriteId, "_sss");
-        EntityTextureSet textures = new EntityTextureSet();
-        try {
-            populateTextureSet(textures, textureId.toString(), pixels, width, height,
-                    nImg, sImg, sssImg);
-        } catch (RuntimeException e) {
-            textures.destroy();
-            throw e;
-        } finally {
-            if (nImg != null) nImg.close();
-            if (sImg != null) sImg.close();
-            if (sssImg != null) sssImg.close();
-        }
-
-        if (textures.albedo == null) {
-            textures.destroy();
-            return null;
-        }
+        PreparedTextureSet prepared = preparePlainTextureSet(textureId.toString(), pixels,
+                width, height, spriteId == null ? null : renderThreadVariants(rm), spriteId);
+        EntityTextureSet textures = uploadPreparedTextureSet(prepared);
+        if (textures == null) return null;
         if (cachedPixels != null && cachedPixels.version() > 0L) {
-            dynamicTextureVersions.put(textureId, cachedPixels.version());
-            dynamicTextureSizes.put(textureId, new TextureSize(width, height));
+            recordDynamicTexture(textureId, cachedPixels.version(), width, height);
         }
         return textures;
     }
 
-    private NativeImage loadVariant(ResourceManager rm, Identifier spriteId, String suffix) {
-        if (spriteId == null) return null;
+    private void recordDynamicTexture(Identifier textureId, long version, int width, int height) {
+        dynamicTextureVersions.put(textureId, version);
+        dynamicTextureSizes.put(textureId, new TextureSize(width, height));
+    }
+
+    /**
+     * Decodes a pack texture to RGBA bytes. Safe off the render thread: the image is
+     * private to the call and never touches GL.
+     */
+    private static DecodedImage decodeRGBA(Resource resource) throws IOException {
+        try (InputStream stream = resource.open();
+             NativeImage image = NativeImage.read(stream)) {
+            int width = image.getWidth();
+            int height = image.getHeight();
+            return new DecodedImage(abgrToRGBA(image, width, height), width, height);
+        }
+    }
+
+    /** The render thread's variant index, built on first use after each reload. */
+    private LabPBRConverter.VariantCache renderThreadVariants(ResourceManager rm) {
         if (labPBRVariants == null) labPBRVariants = LabPBRConverter.buildVariantCache(rm);
-        return labPBRVariants.loadVariant(spriteId, suffix);
+        return labPBRVariants;
+    }
+
+    private static NativeImage loadVariant(LabPBRConverter.VariantCache variants,
+                                           Identifier spriteId, String suffix) {
+        if (variants == null || spriteId == null) return null;
+        return variants.loadVariant(spriteId, suffix);
+    }
+
+    // --- off-thread texture-set loading ---
+
+    /**
+     * Starts preparing {@code textureId}'s texture set on the loader thread. The pack read,
+     * PNG decodes, and LabPBR conversion go there; anything that reads live Minecraft
+     * texture state stays here, because a resource reload frees it on this thread.
+     *
+     * @return true when the caller should leave the set missing this frame: it is being
+     *         prepared, there is no room to queue it yet, or there is nothing to build it
+     *         from yet; false when it should be built inline as before
+     */
+    private boolean requestTextureSetOffThread(Identifier textureId) {
+        // One white texel and no variants: nothing worth a round trip.
+        if (RenderLayerUtils.UNTEXTURED_LAYER_ID.equals(textureId)) return false;
+        if (textureLoader.isPending(textureId)) return true;
+        if (!textureLoader.hasCapacity()) return true;
+        var client = Minecraft.getInstance();
+        if (client == null) return true;
+        return isAtlasTexture(textureId)
+                ? requestAtlasTextureSet(client, textureId)
+                : requestPlainTextureSet(client, textureId);
+    }
+
+    private boolean requestPlainTextureSet(Minecraft client, Identifier textureId) {
+        Identifier spriteId = deriveLabPBRSpriteId(textureId);
+        LabPBRConverter.VariantCache variants = labPBRVariants;
+        DynamicTextureCache.Pixels cached = null;
+        if (!resourceMissing.contains(textureId)) {
+            // Pixels the game already holds under this id are what vanilla draws for it, not
+            // a pack file, so the id is memoized as absent from the packs here rather than
+            // after a loader job's pack walk misses. Waiting for that miss would leave a newly
+            // downloaded skin, a new glyph page, or a new map without a layer for the frames
+            // the round trip takes, and spend loader slots on a lookup known to miss.
+            cached = DynamicTextureCache.get(textureId);
+            if (cached != null) resourceMissing.add(textureId);
+        }
+        if (resourceMissing.contains(textureId)) {
+            // The pixels are already in memory: a downloaded skin, a glyph page, a map. With
+            // no variant to look for, or an index already built to look in, what is left is a
+            // copy and a lookup, so build inline rather than blank the layer while a skin
+            // swaps in. Only a first build of the variant index is worth moving. A skin still
+            // downloading has no pixels yet and waits, as it does inline.
+            if (spriteId == null || variants != null) return false;
+            if (cached == null) cached = DynamicTextureCache.get(textureId);
+            if (cached == null) return true;
+        }
+        ResourceManager rm = client.getResourceManager();
+        String name = textureId.toString();
+        long generation = textureLoader.generation();
+        if (cached != null) {
+            byte[] pixels = Arrays.copyOf(cached.data(), cached.data().length);
+            int width = cached.width();
+            int height = cached.height();
+            long version = cached.version();
+            textureLoader.request(textureId, () -> {
+                LabPBRConverter.VariantCache used = loaderVariantCache(generation, rm, null);
+                PreparedTextureSet prepared = preparePlainTextureSet(
+                        name, pixels, width, height, used, spriteId);
+                prepared.variants = used;
+                prepared.dynamicVersion = version;
+                return prepared;
+            });
+            return true;
+        }
+        textureLoader.request(textureId, () -> {
+            // A miss comes back as null for the render thread to memoize in
+            // resourceMissing, so the pack walk is paid once, as on the inline path.
+            Optional<Resource> resource = rm.getResource(textureId);
+            if (resource.isEmpty()) return null;
+            DecodedImage image = decodeRGBA(resource.get());
+            LabPBRConverter.VariantCache used = spriteId == null
+                    ? null : loaderVariantCache(generation, rm, variants);
+            PreparedTextureSet prepared = preparePlainTextureSet(
+                    name, image.pixels(), image.width(), image.height(), used, spriteId);
+            prepared.variants = used;
+            return prepared;
+        });
+        return true;
+    }
+
+    private boolean requestAtlasTextureSet(Minecraft client, Identifier textureId) {
+        try {
+            AtlasSnapshot snapshot = snapshotAtlas(client, textureId);
+            if (snapshot == null) return true;
+            ResourceManager rm = client.getResourceManager();
+            LabPBRConverter.VariantCache variants = labPBRVariants;
+            long generation = textureLoader.generation();
+            String name = "atlas_" + textureId;
+            textureLoader.request(textureId, () -> {
+                LabPBRConverter.VariantCache used = loaderVariantCache(generation, rm, variants);
+                PreparedTextureSet prepared = prepareAtlasTextureSet(name, snapshot, used);
+                prepared.variants = used;
+                return prepared;
+            });
+        } catch (Exception e) {
+            LOGGER.error("Failed to create atlas textures for {}: {}", textureId, e.getMessage(), e);
+            failedTextures.add(textureId);
+        }
+        return true;
+    }
+
+    /**
+     * The variant index a loader job looks its variants up in. Runs on the loader thread.
+     * The render thread's index is lent when it has one; otherwise the loader builds its
+     * own once per loader generation, so after a reload, which bumps the generation, no
+     * job reads an index built from the previous packs.
+     */
+    private LabPBRConverter.VariantCache loaderVariantCache(long generation, ResourceManager rm,
+                                                            LabPBRConverter.VariantCache lent) {
+        if (lent != null) return lent;
+        LoaderVariants cached = loaderVariants;
+        if (cached != null && cached.generation() == generation) return cached.cache();
+        LabPBRConverter.VariantCache built = LabPBRConverter.buildVariantCache(rm);
+        loaderVariants = new LoaderVariants(generation, built);
+        return built;
+    }
+
+    /**
+     * Turns a prepared set into Remix textures; the loader's sink, on the render thread.
+     * Each outcome matches the inline build's: a missing resource is memoized, a failed
+     * atlas is not retried until it is uploaded again, and a failed plain texture is
+     * retried the next time it is drawn.
+     */
+    private void acceptLoadedTextureSet(Identifier textureId, PreparedTextureSet prepared,
+                                        Throwable failure) {
+        boolean atlas = isAtlasTexture(textureId);
+        try {
+            if (failure != null) {
+                reportTextureSetFailure(textureId, atlas, failure);
+                return;
+            }
+            if (prepared == null) {
+                resourceMissing.add(textureId);
+                return;
+            }
+            if (labPBRVariants == null && prepared.variants != null) {
+                labPBRVariants = prepared.variants;
+            }
+            if (textureSets.containsKey(textureId) || failedTextures.contains(textureId)) return;
+            EntityTextureSet textures = atlas
+                    ? createAtlasTextureSet(textureId, prepared)
+                    : uploadPreparedTextureSet(prepared);
+            if (textures == null) return;
+            textureSets.put(textureId, textures);
+            if (prepared.dynamicVersion > 0L) {
+                recordDynamicTexture(textureId, prepared.dynamicVersion,
+                        prepared.width, prepared.height);
+            }
+        } catch (RuntimeException e) {
+            reportTextureSetFailure(textureId, atlas, e);
+        }
+    }
+
+    private void reportTextureSetFailure(Identifier textureId, boolean atlas, Throwable failure) {
+        if (atlas) {
+            LOGGER.error("Failed to create atlas textures for {}: {}",
+                    textureId, failure.getMessage(), failure);
+            failedTextures.add(textureId);
+        } else {
+            LOGGER.error("Failed to create material for {}: {}",
+                    textureId, failure.getMessage(), failure);
+        }
     }
 
     /**
@@ -2239,7 +2538,9 @@ public class RemixEntitySubmitter {
      * @return true only when a live material is cached for the atlas
      */
     public boolean preloadLargeBlockEntityAtlases() {
-        ensureMaterial(BEDS_ATLAS_MATERIAL_KEY);
+        // Built inline even with off-thread loading: warm-up runs under the join
+        // screen, where a stall is hidden, and the caller needs the answer now.
+        ensureMaterial(BEDS_ATLAS_MATERIAL_KEY, false);
         return hasLiveLargeBlockEntityAtlasMaterial();
     }
 
@@ -2283,121 +2584,169 @@ public class RemixEntitySubmitter {
         try {
             var client = Minecraft.getInstance();
             if (client == null) return null;
-            AbstractTexture tex = client.getTextureManager().getTexture(textureId);
-            if (!(tex instanceof TextureAtlas atlas)) {
-                LOGGER.warn("Atlas texture {} is not a SpriteAtlasTexture", textureId);
-                failedTextures.add(textureId);
-                return null;
-            }
-
-            int w = BlockTextureManager.atlasWidth(atlas);
-            int h = BlockTextureManager.atlasHeight(atlas);
-            if (w == 0 || h == 0) {
-                failedTextures.add(textureId);
-                return null;
-            }
-            byte[] pixels = BlockTextureManager.stitchAtlasRGBA(atlas);
-            int pixelCount = w * h;
-            byte[] normalData = new byte[pixelCount * 4];
-            byte[] heightData = new byte[pixelCount];
-            byte[] roughData = new byte[pixelCount];
-            byte[] metalData = new byte[pixelCount];
-            byte[] emissiveData = new byte[pixelCount * 4];
-            byte[] sssData = new byte[pixelCount * 4];
-            byte[] sssAlbedoData = LabPBRConverter.createSingleScatteringAlbedoFallback(pixels);
-            Arrays.fill(heightData, (byte) 255);
-            Arrays.fill(roughData, (byte) 180);
-            fillFlatNormals(normalData);
-
-            boolean hasNormal = false;
-            boolean hasSpecular = false;
-            boolean hasEmissive = false;
-            boolean hasSss = false;
-            ResourceManager rm = client.getResourceManager();
-            Map<Identifier, TextureAtlasSprite> sprites = ((SpriteAtlasAccessor) atlas).getSprites();
-            for (Map.Entry<Identifier, TextureAtlasSprite> entry : sprites.entrySet()) {
-                Identifier spriteId = entry.getKey();
-                TextureAtlasSprite sprite = entry.getValue();
-                int x = Math.round(sprite.getU0() * w);
-                int y = Math.round(sprite.getV0() * h);
-                int spriteW = sprite.contents().width();
-                int spriteH = sprite.contents().height();
-                NativeImage nImg = loadVariant(rm, spriteId, "_n");
-                NativeImage sImg = loadVariant(rm, spriteId, "_s");
-                NativeImage sssImg = loadVariant(rm, spriteId, "_sss");
-                try {
-                    if (nImg != null) {
-                        LabPBRConverter.blitNormal(normalData, w, nImg, x, y, spriteW, spriteH);
-                        LabPBRConverter.blitHeight(heightData, w, nImg, x, y, spriteW, spriteH);
-                        LabPBRConverter.applyAO(pixels, w, nImg, x, y, spriteW, spriteH);
-                        LabPBRConverter.applyAOToData(sssAlbedoData, w, nImg, x, y, spriteW, spriteH);
-                        hasNormal = true;
-                    }
-                    if (sImg != null) {
-                        LabPBRConverter.blitRoughness(roughData, w, sImg, x, y, spriteW, spriteH);
-                        LabPBRConverter.blitMetallic(metalData, w, sImg, x, y, spriteW, spriteH);
-                        hasSpecular = true;
-                        if (LabPBRConverter.hasEmissiveData(sImg)) {
-                            LabPBRConverter.blitEmissive(emissiveData, w, pixels, sImg,
-                                    x, y, spriteW, spriteH, 0f);
-                            hasEmissive = true;
-                        }
-                        if (LabPBRConverter.hasSSSData(sImg)) {
-                            LabPBRConverter.blitSSS(sssData, w, sImg, x, y, spriteW, spriteH);
-                            hasSss = true;
-                        }
-                    }
-                    if (sssImg != null) {
-                        LabPBRConverter.blitSingleScatteringAlbedo(
-                                sssAlbedoData, w, sssImg, x, y, spriteW, spriteH);
-                    }
-                } finally {
-                    if (nImg != null) nImg.close();
-                    if (sImg != null) sImg.close();
-                    if (sssImg != null) sssImg.close();
-                }
-            }
-
-            EntityTextureSet textures = new EntityTextureSet();
-            String name = "atlas_" + textureId;
-            textures.albedo = uploadAndOwn(textures, name + "_a", pixels, w, h,
-                    TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);
-            if (textures.albedo == null) {
-                textures.destroy();
-                failedTextures.add(textureId);
-                return null;
-            }
-            if (hasNormal) {
-                textures.normal = uploadAndOwn(textures, name + "_n", normalData, w, h,
-                        TextureFormat.RGBA8_UNORM, TexturePurpose.NORMAL_DX);
-                textures.height = uploadAndOwn(textures, name + "_h", heightData, w, h,
-                        TextureFormat.R8_UNORM, TexturePurpose.HEIGHTMAP);
-            }
-            if (hasSpecular) {
-                textures.roughness = uploadAndOwn(textures, name + "_r", roughData, w, h,
-                        TextureFormat.R8_UNORM, TexturePurpose.DATA);
-                textures.metallic = uploadAndOwn(textures, name + "_m", metalData, w, h,
-                        TextureFormat.R8_UNORM, TexturePurpose.DATA);
-            }
-            if (hasEmissive) {
-                textures.emissive = uploadAndOwn(textures, name + "_e", emissiveData, w, h,
-                        TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);
-            }
-            if (hasSss) {
-                textures.sssThickness = uploadAndOwn(textures, name + "_sss", sssData, w, h,
-                        TextureFormat.RGBA8_UNORM, TexturePurpose.DATA);
-                textures.sssAlbedo = uploadAndOwn(textures, name + "_ssa", sssAlbedoData, w, h,
-                        TextureFormat.RGBA8_UNORM, TexturePurpose.DATA);
-            }
-            textures.hasPBR = hasNormal || hasSpecular || hasSss;
-            LOGGER.info("Created entity atlas textures for {} ({}x{}, {} sprites, LabPBR={})",
-                    textureId, w, h, sprites.size(), textures.hasPBR);
-            return textures;
+            AtlasSnapshot snapshot = snapshotAtlas(client, textureId);
+            if (snapshot == null) return null;
+            PreparedTextureSet prepared = prepareAtlasTextureSet("atlas_" + textureId, snapshot,
+                    renderThreadVariants(client.getResourceManager()));
+            return createAtlasTextureSet(textureId, prepared);
         } catch (Exception e) {
             LOGGER.error("Failed to create atlas textures for {}: {}", textureId, e.getMessage(), e);
             failedTextures.add(textureId);
             return null;
         }
+    }
+
+    /**
+     * Copies what the atlas LabPBR build needs out of the live atlas: the stitched albedo
+     * and each sprite's placement. Render thread only, since the sprites' images belong to
+     * the atlas and a resource reload frees them here. Records a permanent failure and
+     * returns null when the id is not a stitched atlas or has no size yet.
+     */
+    private AtlasSnapshot snapshotAtlas(Minecraft client, Identifier textureId) {
+        AbstractTexture tex = client.getTextureManager().getTexture(textureId);
+        if (!(tex instanceof TextureAtlas atlas)) {
+            LOGGER.warn("Atlas texture {} is not a TextureAtlas", textureId);
+            failedTextures.add(textureId);
+            return null;
+        }
+
+        int w = BlockTextureManager.atlasWidth(atlas);
+        int h = BlockTextureManager.atlasHeight(atlas);
+        if (w == 0 || h == 0) {
+            failedTextures.add(textureId);
+            return null;
+        }
+        byte[] pixels = BlockTextureManager.stitchAtlasRGBA(atlas);
+        Map<Identifier, TextureAtlasSprite> sprites = ((SpriteAtlasAccessor) atlas).getSprites();
+        Identifier[] spriteIds = new Identifier[sprites.size()];
+        int[] spriteRects = new int[sprites.size() * 4];
+        boolean[] animated = new boolean[sprites.size()];
+        int i = 0;
+        for (Map.Entry<Identifier, TextureAtlasSprite> entry : sprites.entrySet()) {
+            TextureAtlasSprite sprite = entry.getValue();
+            spriteIds[i] = entry.getKey();
+            spriteRects[i * 4] = Math.round(sprite.getU0() * w);
+            spriteRects[i * 4 + 1] = Math.round(sprite.getV0() * h);
+            spriteRects[i * 4 + 2] = sprite.contents().width();
+            spriteRects[i * 4 + 3] = sprite.contents().height();
+            animated[i] = ((SpriteContentsAccessor) sprite.contents()).getAnimation() != null;
+            i++;
+        }
+        return new AtlasSnapshot(pixels, w, h, spriteIds, spriteRects, animated);
+    }
+
+    /**
+     * Builds an atlas's parallel LabPBR channels from its snapshot and each sprite's pack
+     * variants. Reads nothing live, so it runs on the loader thread as readily as inline.
+     * Applies the {@code _n} ambient occlusion to the snapshot's albedo in place.
+     */
+    private static PreparedTextureSet prepareAtlasTextureSet(String name, AtlasSnapshot snapshot,
+                                                             LabPBRConverter.VariantCache variants) {
+        int w = snapshot.width();
+        int h = snapshot.height();
+        byte[] pixels = snapshot.pixels();
+        int pixelCount = w * h;
+        byte[] normalData = new byte[pixelCount * 4];
+        byte[] heightData = new byte[pixelCount];
+        byte[] roughData = new byte[pixelCount];
+        byte[] metalData = new byte[pixelCount];
+        byte[] emissiveData = new byte[pixelCount * 4];
+        byte[] sssData = new byte[pixelCount * 4];
+        byte[] sssAlbedoData = LabPBRConverter.createSingleScatteringAlbedoFallback(pixels);
+        Arrays.fill(heightData, (byte) 255);
+        Arrays.fill(roughData, (byte) 180);
+        fillFlatNormals(normalData);
+
+        boolean hasNormal = false;
+        boolean hasSpecular = false;
+        boolean hasEmissive = false;
+        boolean hasSss = false;
+        Identifier[] spriteIds = snapshot.spriteIds();
+        int[] rects = snapshot.spriteRects();
+        Map<String, BlockTextureManager.AnimatedSpriteLabPBR> animationPbr = new HashMap<>();
+        for (int i = 0; i < spriteIds.length; i++) {
+            Identifier spriteId = spriteIds[i];
+            int x = rects[i * 4];
+            int y = rects[i * 4 + 1];
+            int spriteW = rects[i * 4 + 2];
+            int spriteH = rects[i * 4 + 3];
+            NativeImage nImg = loadVariant(variants, spriteId, "_n");
+            NativeImage sImg = loadVariant(variants, spriteId, "_s");
+            NativeImage sssImg = loadVariant(variants, spriteId, "_sss");
+            try {
+                if (snapshot.animated()[i] && (nImg != null || sImg != null)) {
+                    animationPbr.put(spriteId.toString(), BlockTextureManager.AnimatedSpriteLabPBR.fromVariants(spriteId, nImg, sImg));
+                }
+                if (nImg != null) {
+                    LabPBRConverter.blitNormal(normalData, w, nImg, x, y, spriteW, spriteH);
+                    LabPBRConverter.blitHeight(heightData, w, nImg, x, y, spriteW, spriteH);
+                    LabPBRConverter.applyAO(pixels, w, nImg, x, y, spriteW, spriteH);
+                    LabPBRConverter.applyAOToData(sssAlbedoData, w, nImg, x, y, spriteW, spriteH);
+                    hasNormal = true;
+                }
+                if (sImg != null) {
+                    LabPBRConverter.blitRoughness(roughData, w, sImg, x, y, spriteW, spriteH);
+                    LabPBRConverter.blitMetallic(metalData, w, sImg, x, y, spriteW, spriteH);
+                    hasSpecular = true;
+                    if (LabPBRConverter.hasEmissiveData(sImg)) {
+                        LabPBRConverter.blitEmissive(emissiveData, w, pixels, sImg,
+                                x, y, spriteW, spriteH, 0f);
+                        hasEmissive = true;
+                    }
+                    if (LabPBRConverter.hasSSSData(sImg)) {
+                        LabPBRConverter.blitSSS(sssData, w, sImg, x, y, spriteW, spriteH);
+                        hasSss = true;
+                    }
+                }
+                if (sssImg != null) {
+                    LabPBRConverter.blitSingleScatteringAlbedo(
+                            sssAlbedoData, w, sssImg, x, y, spriteW, spriteH);
+                }
+            } finally {
+                if (nImg != null) nImg.close();
+                if (sImg != null) sImg.close();
+                if (sssImg != null) sssImg.close();
+            }
+        }
+
+        PreparedTextureSet prepared = new PreparedTextureSet(name, true, pixels, w, h);
+        if (hasNormal) {
+            prepared.normal = normalData;
+            prepared.heightMap = heightData;
+        }
+        if (hasSpecular) {
+            prepared.roughness = roughData;
+            prepared.metallic = metalData;
+        }
+        if (hasEmissive) {
+            prepared.emissive = emissiveData;
+        }
+        if (hasSss) {
+            prepared.sssThickness = sssData;
+            prepared.sssAlbedo = sssAlbedoData;
+        }
+        prepared.hasPBR = hasNormal || hasSpecular || hasSss;
+        prepared.spriteCount = spriteIds.length;
+        prepared.spriteIds = Set.of(spriteIds);
+        prepared.animationPbr = animationPbr;
+        return prepared;
+    }
+
+    /** Uploads a prepared atlas set; a failed albedo upload marks the atlas failed. */
+    private EntityTextureSet createAtlasTextureSet(Identifier textureId, PreparedTextureSet prepared) {
+        EntityTextureSet textures = uploadPreparedTextureSet(prepared);
+        if (textures == null) {
+            failedTextures.add(textureId);
+            return null;
+        }
+        textures.animation = AtlasAnimationForwarder.register(textureId, prepared.spriteIds, prepared.animationPbr,
+                textures.albedo.getHandle(), textures.emissive == null ? 0 : textures.emissive.getHandle(),
+                textures.roughness == null ? 0 : textures.roughness.getHandle(),
+                textures.metallic == null ? 0 : textures.metallic.getHandle(),
+                textures.sssThickness == null ? 0 : textures.sssThickness.getHandle());
+        LOGGER.info("Created entity atlas textures for {} ({}x{}, {} sprites, LabPBR={})",
+                textureId, prepared.width, prepared.height, prepared.spriteCount, textures.hasPBR);
+        return textures;
     }
 
     public static void onMinecraftAtlasUploaded(Identifier atlasId) {
@@ -2410,10 +2759,13 @@ public class RemixEntitySubmitter {
     private void refreshUploadedAtlas(Identifier atlasId) {
         if (!isAtlasTexture(atlasId)) return;
         failedTextures.remove(atlasId);
-        if (textureSets.containsKey(atlasId) || isBorrowedAtlasMaterial(atlasId)) {
+        if (textureSets.containsKey(atlasId) || textureLoader.isPending(atlasId)
+                || isBorrowedAtlasMaterial(atlasId)) {
             // Rebuild the full texture set. Updating albedo alone would leave AO,
             // emissive, and every parallel LabPBR atlas out of sync. A borrowed
             // material is rebuilt by its owner; the meshes bound to it here must go.
+            // A set still being prepared was stitched from the old upload, so it is
+            // dropped too.
             invalidateMaterialTexture(atlasId);
         }
     }
@@ -2492,6 +2844,7 @@ public class RemixEntitySubmitter {
         }
         EntityTextureSet textures = textureSets.remove(textureId);
         if (textures != null) textures.destroy();
+        textureLoader.cancel(textureId);
         dynamicTextureSizes.remove(textureId);
         dynamicTextureVersions.remove(textureId);
         failedTextures.remove(textureId);
@@ -2530,62 +2883,113 @@ public class RemixEntitySubmitter {
         return null;
     }
 
-    private void populateTextureSet(EntityTextureSet textures, String textureName,
-                                    byte[] albedoRGBA, int w, int h,
-                                    NativeImage nImg, NativeImage sImg, NativeImage sssImg) {
-        if (nImg != null) {
-            LabPBRConverter.applyAO(albedoRGBA, w, nImg, 0, 0, w, h);
-        }
-        textures.albedo = uploadAndOwn(textures, "entity_a_" + textureName, albedoRGBA, w, h,
-                TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);
-        if (textures.albedo == null) return;
-
-        if (nImg != null) {
-            byte[] normalData = new byte[w * h * 4];
-            byte[] heightData = new byte[w * h];
-            LabPBRConverter.blitNormal(normalData, w, nImg, 0, 0, w, h);
-            LabPBRConverter.blitHeight(heightData, w, nImg, 0, 0, w, h);
-            textures.normal = uploadAndOwn(textures, "entity_n_" + textureName, normalData, w, h,
-                    TextureFormat.RGBA8_UNORM, TexturePurpose.NORMAL_DX);
-            textures.height = uploadAndOwn(textures, "entity_h_" + textureName, heightData, w, h,
-                    TextureFormat.R8_UNORM, TexturePurpose.HEIGHTMAP);
-            textures.hasPBR = true;
-        }
-        if (sImg != null) {
-            byte[] roughData = new byte[w * h];
-            byte[] metalData = new byte[w * h];
-            byte[] sssData   = new byte[w * h * 4];
-            byte[] emissData = new byte[w * h * 4];
-            LabPBRConverter.blitRoughness(roughData, w, sImg, 0, 0, w, h);
-            LabPBRConverter.blitMetallic(metalData, w, sImg, 0, 0, w, h);
-            LabPBRConverter.blitSSS(sssData, w, sImg, 0, 0, w, h);
-            textures.roughness = uploadAndOwn(textures, "entity_r_" + textureName, roughData, w, h,
-                    TextureFormat.R8_UNORM, TexturePurpose.DATA);
-            textures.metallic = uploadAndOwn(textures, "entity_m_" + textureName, metalData, w, h,
-                    TextureFormat.R8_UNORM, TexturePurpose.DATA);
-            if (LabPBRConverter.hasEmissiveData(sImg)) {
-                LabPBRConverter.blitEmissive(emissData, w, albedoRGBA, sImg, 0, 0, w, h, 0f);
-                textures.emissive = uploadAndOwn(textures, "entity_e_" + textureName, emissData, w, h,
-                        TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);
+    /**
+     * Builds a plain texture's LabPBR channels from its albedo and its pack's {@code _n},
+     * {@code _s}, and {@code _sss} variants. Reads no live Minecraft or Remix state, so it
+     * runs on the loader thread as readily as inline. Applies the {@code _n} ambient
+     * occlusion to {@code albedoRGBA} in place.
+     */
+    private static PreparedTextureSet preparePlainTextureSet(String textureName,
+                                                             byte[] albedoRGBA, int w, int h,
+                                                             LabPBRConverter.VariantCache variants,
+                                                             Identifier spriteId) {
+        NativeImage nImg = loadVariant(variants, spriteId, "_n");
+        NativeImage sImg = loadVariant(variants, spriteId, "_s");
+        NativeImage sssImg = loadVariant(variants, spriteId, "_sss");
+        try {
+            PreparedTextureSet prepared = new PreparedTextureSet(textureName, false, albedoRGBA, w, h);
+            if (nImg != null) {
+                LabPBRConverter.applyAO(albedoRGBA, w, nImg, 0, 0, w, h);
+                prepared.normal = new byte[w * h * 4];
+                prepared.heightMap = new byte[w * h];
+                LabPBRConverter.blitNormal(prepared.normal, w, nImg, 0, 0, w, h);
+                LabPBRConverter.blitHeight(prepared.heightMap, w, nImg, 0, 0, w, h);
+                prepared.hasPBR = true;
             }
-
-            if (LabPBRConverter.hasSSSData(sImg)) {
-                textures.sssThickness = uploadAndOwn(textures, "entity_sss_" + textureName,
-                        sssData, w, h,
-                        TextureFormat.RGBA8_UNORM, TexturePurpose.DATA);
+            if (sImg != null) {
+                prepared.roughness = new byte[w * h];
+                prepared.metallic = new byte[w * h];
+                LabPBRConverter.blitRoughness(prepared.roughness, w, sImg, 0, 0, w, h);
+                LabPBRConverter.blitMetallic(prepared.metallic, w, sImg, 0, 0, w, h);
+                if (LabPBRConverter.hasEmissiveData(sImg)) {
+                    prepared.emissive = new byte[w * h * 4];
+                    LabPBRConverter.blitEmissive(prepared.emissive, w, albedoRGBA, sImg,
+                            0, 0, w, h, 0f);
+                }
+                if (LabPBRConverter.hasSSSData(sImg)) {
+                    prepared.sssThickness = new byte[w * h * 4];
+                    LabPBRConverter.blitSSS(prepared.sssThickness, w, sImg, 0, 0, w, h);
+                }
+                prepared.hasPBR = true;
             }
-            textures.hasPBR = true;
+            // _sss only colors subsurface scattering. _s.B is the authoritative
+            // activation mask, so the sss color alone must not turn the whole
+            // entity texture into an SSS material.
+            if (sssImg != null && prepared.sssThickness != null) {
+                prepared.sssAlbedo = new byte[w * h * 4];
+                LabPBRConverter.blitSingleScatteringAlbedo(prepared.sssAlbedo, w, sssImg,
+                        0, 0, w, h);
+            }
+            return prepared;
+        } finally {
+            if (nImg != null) nImg.close();
+            if (sImg != null) sImg.close();
+            if (sssImg != null) sssImg.close();
         }
-        // _sss only colors subsurface scattering. _s.B is the authoritative
-        // activation mask, so the sss color alone must not turn the whole
-        // entity texture into an SSS material.
-        if (sssImg != null && textures.sssThickness != null) {
-            byte[] sssAlbedoData = new byte[w * h * 4];
-            LabPBRConverter.blitSingleScatteringAlbedo(sssAlbedoData, w, sssImg, 0, 0, w, h);
-            textures.sssAlbedo = uploadAndOwn(textures, "entity_ssa_" + textureName,
-                    sssAlbedoData, w, h, TextureFormat.RGBA8_UNORM, TexturePurpose.DATA);
-            textures.hasPBR = true;
+    }
+
+    /**
+     * Creates the Remix textures of a prepared set, on the render thread. Returns null, with
+     * nothing left allocated, when the albedo upload fails, so the caller retries rather
+     * than caching a set with no albedo.
+     */
+    private EntityTextureSet uploadPreparedTextureSet(PreparedTextureSet prepared) {
+        int w = prepared.width;
+        int h = prepared.height;
+        EntityTextureSet textures = new EntityTextureSet();
+        try {
+            textures.albedo = uploadAndOwn(textures, prepared.channelName("a"), prepared.albedo,
+                    w, h, TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);
+            if (textures.albedo == null) {
+                textures.destroy();
+                return null;
+            }
+            if (prepared.normal != null) {
+                textures.normal = uploadAndOwn(textures, prepared.channelName("n"),
+                        prepared.normal, w, h, TextureFormat.RGBA8_UNORM, TexturePurpose.NORMAL_DX);
+            }
+            if (prepared.heightMap != null) {
+                textures.height = uploadAndOwn(textures, prepared.channelName("h"),
+                        prepared.heightMap, w, h, TextureFormat.R8_UNORM, TexturePurpose.HEIGHTMAP);
+            }
+            if (prepared.roughness != null) {
+                textures.roughness = uploadAndOwn(textures, prepared.channelName("r"),
+                        prepared.roughness, w, h, TextureFormat.R8_UNORM, TexturePurpose.DATA);
+            }
+            if (prepared.metallic != null) {
+                textures.metallic = uploadAndOwn(textures, prepared.channelName("m"),
+                        prepared.metallic, w, h, TextureFormat.R8_UNORM, TexturePurpose.DATA);
+            }
+            if (prepared.emissive != null) {
+                textures.emissive = uploadAndOwn(textures, prepared.channelName("e"),
+                        prepared.emissive, w, h, TextureFormat.RGBA8_UNORM, TexturePurpose.COLOR);
+            }
+            if (prepared.sssThickness != null) {
+                textures.sssThickness = uploadAndOwn(textures, prepared.channelName("sss"),
+                        prepared.sssThickness, w, h, TextureFormat.RGBA8_UNORM, TexturePurpose.DATA);
+            }
+            // A plain texture's _sss colour means nothing without its _s mask's texture; an
+            // atlas uploads both whenever any sprite has a mask, as it always has.
+            if (prepared.sssAlbedo != null && (prepared.atlas || textures.sssThickness != null)) {
+                textures.sssAlbedo = uploadAndOwn(textures, prepared.channelName("ssa"),
+                        prepared.sssAlbedo, w, h, TextureFormat.RGBA8_UNORM, TexturePurpose.DATA);
+            }
+            textures.hasPBR = prepared.hasPBR;
+        } catch (RuntimeException e) {
+            textures.destroy();
+            throw e;
         }
+        return textures;
     }
 
     private RemixMaterial createMaterial(EntityMaterialKey key, EntityTextureSet textures) {
@@ -2811,6 +3215,9 @@ public class RemixEntitySubmitter {
 
         for (EntityTextureSet textures : textureSets.values()) textures.destroy();
         textureSets.clear();
+        // Sets still being prepared read the packs being replaced; drop them and
+        // everything already back. They hold only heap data, so nothing is freed here.
+        textureLoader.invalidateAll();
         dynamicTextureSizes.clear();
         dynamicTextureVersions.clear();
         failedTextures.clear();
@@ -2827,6 +3234,7 @@ public class RemixEntitySubmitter {
 
     public void close() {
         clear();
+        textureLoader.shutdown();
         if (activeSubmitter == this) {
             activeSubmitter = null;
         }

@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 """Install a built development mod into an existing Fabric game directory."""
 
@@ -9,6 +12,7 @@ import os
 import shutil
 from pathlib import Path
 
+from . import prism
 from .benchmark import util
 
 # The runtime textures the mod loads from <gameDir>/textures/. build.gradle checks the same files after every pull.
@@ -101,14 +105,18 @@ def install_development_build(project_dir: Path, *, game_dir: Path | None = None
         return 1
 
     mods = game_dir / "mods"
+    missing_fabric_api = not any(mods.glob("fabric-api-*.jar"))
+    fabric_api_version = (
+        prism.installer_constant("FABRIC_API_VERSION", project_dir=project_dir) if missing_fabric_api else None
+    )
     mods.mkdir(parents=True, exist_ok=True)
     for previous in mods.glob("rtx-remix-renderer*.jar"):
         if previous.is_file():
             previous.unlink()
     shutil.copy2(mod_jar, mods / "rtx-remix-renderer.jar")
-    if not any(mods.glob("fabric-api-*.jar")):
+    if missing_fabric_api:
         print(f"WARNING: no fabric-api jar in {mods}.")
-        print("         The mod requires fabric-api >=0.116.10+1.21.1 (https://modrinth.com/mod/fabric-api).")
+        print(f"         The mod requires fabric-api >={fabric_api_version} (https://modrinth.com/mod/fabric-api).")
 
     _stage_runtime(source, bridge, game_dir / "remix-sdk", selected_arch)
     packaging = project_dir / "packaging"

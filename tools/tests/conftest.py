@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 import re
 import struct
@@ -85,7 +88,7 @@ def recommended_heap_mib() -> int:
     return -(-int(number) * unit_bytes // 1024**2)
 
 
-def write_jdk(home: Path, *, version: str = "21.0.5", machine: int = 0x8664) -> Path:
+def write_jdk(home: Path, *, version: str = "25.0.1", machine: int = 0x8664) -> Path:
     """A JDK home as the launcher reads one: its release file and a bin/javaw.exe whose PE header names `machine`
     (0x8664 x64, 0xAA64 ARM64)."""
     (home / "bin").mkdir(parents=True, exist_ok=True)

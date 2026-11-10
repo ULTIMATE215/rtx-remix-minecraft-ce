@@ -1,13 +1,25 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
+SPDX-License-Identifier: Apache-2.0
+
+Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
+-->
+
 # Playing
 
 This guide takes you from a downloaded archive to a path-traced world. It is
 written for players. You do not need development tools, and you do not need to
 install Java, Fabric, or the RTX Remix runtime yourself.
 
+This branch targets Minecraft 26.2 with ce.7 source parity. Its dedicated
+**Build Minecraft 26.2** Actions workflow compiles and packages Windows x64 builds;
+download the installer from a successful run's artifacts. That workflow excludes
+tests, and game rendering remains unverified.
+
 ## What You Need
 
 - Windows 10 or 11, x64 or ARM64.
-- Minecraft Java Edition 1.21.1, on a Microsoft account that owns the game.
+- Minecraft Java Edition 26.2, on a Microsoft account that owns the game.
 - A GeForce RTX 30-series or newer GPU with NVIDIA driver 616.92 or newer.
 - About 5 GB of free disk space while installing, for the downloaded archive,
   the game, Java, and the unpacked runtime. About 3 GB stays in use afterwards.
@@ -27,7 +39,7 @@ and there are bugs yet to be found. Two things to know before a long session:
 
 - **Other mods.** It has had limited testing alongside other mods, and mods
   that change rendering or chunk loading are likely to conflict with it.
-- **Scope.** It targets Minecraft 1.21.1 only. Blocks, mobs, dimensions, and
+- **Scope.** This branch targets Minecraft 26.2. Blocks, mobs, dimensions, and
   situations the showcase never reaches have had less care, and some will look
   wrong or run slowly.
 
@@ -37,8 +49,8 @@ fixed.
 ## Download
 
 Download the release archive from the
-[Releases page](https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/releases/latest)
-and extract it.
+[Releases page](https://github.com/CuteEthanLeo/rtx-remix-minecraft-ce/releases),
+select a tag ending in `+mc26.2`, and extract it.
 
 ## Which Launcher
 

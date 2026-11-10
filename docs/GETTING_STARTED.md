@@ -1,3 +1,10 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
+SPDX-License-Identifier: Apache-2.0
+
+Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
+-->
+
 # Getting Started (Developers)
 
 How to build and run the mod from source. If you only want to play, read
@@ -7,11 +14,11 @@ How to build and run the mod from source. If you only want to play, read
 
 - **Windows 10 or 11**, on x64 or ARM64. The JNI bridge is compiled with MSVC,
   so there is no Linux or macOS build.
-- **Java 21**, a JDK matching your machine's architecture. Eclipse Adoptium is
-  a good choice. Set `JAVA_HOME` to that JDK: the native build reads it to find
-  `jni.h`. Prism runs Minecraft 1.21.1 only on Java 21, not a newer version,
-  so the developer tools launch the game on `JAVA_HOME` when it is a JDK 21
-  and otherwise look for one in Gradle's toolchains and in the Eclipse
+- **Java 25**, a JDK matching your machine's architecture. Eclipse Adoptium
+  supplies Windows x64 builds; Microsoft Build of OpenJDK also supports ARM64.
+  Set `JAVA_HOME` to that JDK: the native build reads it to find `jni.h`.
+  The developer tools launch Minecraft 26.2 on `JAVA_HOME` when it is a JDK 25
+  for the selected architecture, and otherwise look in Gradle's toolchains and the Eclipse
   Adoptium, Microsoft, and Java folders under Program Files.
 - **Visual Studio 2022 Build Tools** with the Desktop development with C++
   workload (MSVC v143). Cross-building the ARM64 bridge additionally needs the
@@ -260,7 +267,7 @@ validation of native integration.
 
 The JAR from `package` is the one players get: it embeds the runtime, gameplay
 conf payload, runtime textures, and baseline PBR textures. To try it in a
-normal installation of Minecraft 1.21.1 that already has Fabric Loader and
+normal installation of Minecraft 26.2 that already has Fabric Loader and
 Fabric API, drop it into the instance's `mods` folder; nothing else is needed.
 The release archive's installer also migrates old generated baseline packs and
 preserves user-pack ordering.
@@ -342,9 +349,9 @@ prerequisite described in [Get A Runtime](#get-a-runtime).
 | Produce an artifact | `gradlew build`, `gradlew package`, or `gradlew releaseArchive` | None |
 | Test inside an existing Microsoft Launcher install | `tools\rtx.bat install` after `gradlew build` | `%APPDATA%\.minecraft`, or `--game-dir DIR` |
 
-`build.gradle` also keeps `runClient`, Fabric's standard Gradle task. It runs
-from the repository-local `run/` directory, not the Prism instance, so the two
-share no saves, settings, or logs. The developer tools do not use it.
+Launch development clients through `tools\rtx.bat launch` and a signed-in
+Prism account. Use the checkout's Prism game directory for logs, saves, settings,
+and Mixin exports.
 
 `rtx install` is an alternative to `tools\rtx.bat launch`, not a step before
 it. Build, then install from the repository root:
@@ -471,12 +478,12 @@ removes its stale registration.
 | Symptom | Cause |
 |---|---|
 | `vswhere.exe not found` or `vcvarsall.bat failed` | Visual Studio Build Tools missing, or without the Desktop C++ workload. ARM64 also needs toolset 14.44 |
-| `JAVA_HOME is not set`, or `jni.h not found` | `JAVA_HOME` unset or pointing at a JRE rather than a JDK 21 |
+| `JAVA_HOME is not set`, or `jni.h not found` | `JAVA_HOME` unset or pointing at a JRE rather than a JDK 25 |
 | Gradle cannot fetch the SDK | Check network access to the Packman remote, or stage a matching local runtime. See [Get A Runtime](#get-a-runtime) |
 | A launch reports that Prism Launcher is not installed | Install it from [prismlauncher.org](https://prismlauncher.org), or point `prism.executable` in `tools/config.local.json` at its `prismlauncher.exe` |
 | A launch opens Prism and stops with sign-in steps | No Microsoft account that owns Minecraft is signed in to the selected Prism profile, or `prism.account` names another. See [Sign In To Prism](#sign-in-to-prism) |
 | A launch reports that Prism is already running | Close the selected Prism window and launch again |
-| A launch reports that Minecraft 1.21.1 in Prism needs a 64-bit JDK 21 | `JAVA_HOME` names another Java version or architecture, and no JDK 21 for this machine is installed where the tools look. Install one and set `JAVA_HOME` to it |
+| A launch reports that Minecraft 26.2 in Prism needs a 64-bit JDK 25 | `JAVA_HOME` names another Java version or architecture, and no JDK 25 for this machine is installed where the tools look. Install one and set `JAVA_HOME` to it |
 | A JVM option set in `JAVA_TOOL_OPTIONS` has no effect | Prism does not pass it to the game. Use `launch.jvmArgs`; see [JVM Arguments](TUNING.md#jvm-arguments) |
 | `Failed to initialize RTX Remix` with error code 8, and the game renders vanilla | The staged runtime predates the API in `rtxremix-java/native/include/remix_c.h`. Stage one of the runtimes listed in [Get A Runtime](#get-a-runtime) |
 | `UnsatisfiedLinkError` naming `remixbridge` | The bridge did not compile, or it was compiled for the other architecture. Re-run the build and check that `-Parch` matches the staged runtime |

@@ -1,14 +1,20 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.terrain.capture;
 
 import com.nvidia.rtxremix.minecraft.light.BlockLightRuleManager;
 import net.minecraft.client.renderer.block.BlockStateModelSet;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
-import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
-import net.minecraft.client.resources.model.geometry.BakedQuad;
+import net.fabricmc.fabric.api.client.renderer.v1.Renderer;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadEmitter;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadView;
+import net.fabricmc.fabric.api.client.renderer.v1.model.FabricBlockStateModel;
+import net.minecraft.client.renderer.block.BlockAndTintGetter;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.BlockGetter;
@@ -32,12 +38,6 @@ import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
  */
 public final class ModelSampling implements BlockLightRuleManager.ModelSampler {
 
-    /** Matches the emission loop, so a sampled variant is the drawn variant. */
-    private static final Direction[] DIRECTIONS = {
-        null, Direction.UP, Direction.DOWN, Direction.NORTH,
-        Direction.SOUTH, Direction.EAST, Direction.WEST
-    };
-
     /** Own random, so sampling cannot perturb the emitter's model randomisation. */
     private final SingleThreadedRandomSource random = new SingleThreadedRandomSource(0L);
 
@@ -50,6 +50,7 @@ public final class ModelSampling implements BlockLightRuleManager.ModelSampler {
 
     private BlockStateModel model;
     private boolean modelResolved;
+    private QuadEmitter emitter;
 
     private float[] vertices = new float[3 * 256];
     private int vertexCount;
@@ -69,6 +70,8 @@ public final class ModelSampling implements BlockLightRuleManager.ModelSampler {
         this.world = world;
         if (pos != null) {
             this.origin.set(pos);
+        } else {
+            this.origin.set(0, 0, 0);
         }
         this.blockRenderManager = blockRenderManager;
         this.state = state;
@@ -127,24 +130,26 @@ public final class ModelSampling implements BlockLightRuleManager.ModelSampler {
         }
         if (model == null) return;
 
-        // 1.21.11: models resolve their parts once from the seeded random, as the emitter does.
         random.setSeed(seed);
-        java.util.List<BlockStateModelPart> parts = new java.util.ArrayList<>();
-        model.collectParts(random, parts);
-        for (Direction dir : DIRECTIONS) {
-            for (BlockStateModelPart part : parts) {
-                for (BakedQuad quad : part.getQuads(dir)) {
-                    ensureCapacity(vertexCount + 4);
-                    for (int v = 0; v < 4; v++) {
-                        org.joml.Vector3fc position = quad.position(v);
-                        int w = vertexCount * 3;
-                        vertices[w] = position.x();
-                        vertices[w + 1] = position.y();
-                        vertices[w + 2] = position.z();
-                        vertexCount++;
-                    }
-                }
-            }
+        if (emitter == null) emitter = Renderer.get().quadEmitter(this::collectQuad);
+        emitter.clear();
+        try {
+            ((FabricBlockStateModel) model).emitQuads(emitter,
+                    world instanceof BlockAndTintGetter view ? view : BlockAndTintGetter.EMPTY,
+                    origin, state, random, face -> false);
+        } catch (RuntimeException | Error e) {
+            emitter = null;
+            throw e;
+        }
+    }
+
+    private void collectQuad(QuadView quad) {
+        ensureCapacity(vertexCount + 4);
+        for (int v = 0; v < 4; v++) {
+            int w = vertexCount++ * 3;
+            vertices[w] = quad.x(v);
+            vertices[w + 1] = quad.y(v);
+            vertices[w + 2] = quad.z(v);
         }
     }
 

@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.particle;
 
@@ -73,6 +76,7 @@ public class RemixParticleRenderer {
 
     private final RemixRenderer renderer;
     private final ParticleAtlasManager atlasManager;
+    private final ParticleAtlasManager itemAtlasManager;
     private final HashMap<BucketKey, DynamicBucket> buckets = new HashMap<>();
 
     private InstanceInfoBlendEXT blendExt;
@@ -99,6 +103,12 @@ public class RemixParticleRenderer {
     public RemixParticleRenderer(RemixRenderer renderer, ParticleAtlasManager atlasManager) {
         this.renderer = renderer;
         this.atlasManager = atlasManager;
+        this.itemAtlasManager = new ParticleAtlasManager(renderer, TextureAtlas.LOCATION_ITEMS);
+    }
+
+    /** Native materials are prepared on the render thread before the CPU worker starts. */
+    public void initializeAtlasMaterials() {
+        itemAtlasManager.initialize();
     }
 
     private void ensureBlendExts() {
@@ -137,14 +147,14 @@ public class RemixParticleRenderer {
         // (BillboardParticle.RenderType) instead of per sheet, so the bucket is resolved
         // per particle, caching the last one.
         DynamicBucket lastBucket = null;
-        boolean lastTerrain = false;
+        Identifier lastAtlas = null;
         boolean haveLast = false;
         for (var entry : particleMap.entrySet()) {
             ParticleRenderType sheet = entry.getKey();
             ParticleGroup<?> sheetRenderer = entry.getValue();
             if (sheetRenderer == null || sheetRenderer.isEmpty()) continue;
             if (sheet != ParticleRenderType.SINGLE_QUADS) {
-                // TODO(1.21.11): item pickup and elder guardian sheets are custom renderers.
+                // Non-billboard groups are captured from their extracted states on the render thread.
                 continue;
             }
             Queue<? extends Particle> queue = ((com.nvidia.rtxremix.minecraft.mixin.ParticleGroupAccessor) sheetRenderer).rtxremix$getParticles();
@@ -160,20 +170,19 @@ public class RemixParticleRenderer {
                 if (renderType == null) continue;
                 Identifier atlas = renderType.textureAtlasLocation();
                 boolean isTerrain;
-                if (TextureAtlas.LOCATION_BLOCKS.equals(atlas)) {
+                if (TextureAtlas.LOCATION_BLOCKS.equals(atlas) || TextureAtlas.LOCATION_ITEMS.equals(atlas)) {
                     isTerrain = true;
                 } else if (TextureAtlas.LOCATION_PARTICLES.equals(atlas)) {
                     isTerrain = false;
                 } else {
-                    // TODO(1.21.11): item-atlas particles (item break) have no Remix material yet.
                     continue;
                 }
 
                 DynamicBucket bucket;
-                if (haveLast && lastTerrain == isTerrain) {
+                if (haveLast && lastAtlas.equals(atlas)) {
                     bucket = lastBucket;
                 } else {
-                    RemixMaterial material = resolveMaterial(isTerrain, blockTexMgr);
+                    RemixMaterial material = resolveMaterial(atlas, blockTexMgr);
                     if (material == null || !material.isAlive()) continue;
                     int categoryFlags = isTerrain ? 0 : InstanceCategoryBit.PARTICLE;
                     int blendKind = isTerrain ? BLEND_TERRAIN : BLEND_PARTICLE;
@@ -181,7 +190,7 @@ public class RemixParticleRenderer {
                             new BucketKey(material.getHandle(), categoryFlags, blendKind),
                             material, categoryFlags, blendKind);
                     lastBucket = bucket;
-                    lastTerrain = isTerrain;
+                    lastAtlas = atlas;
                     haveLast = true;
                 }
                 if (bucket == null) continue;
@@ -333,10 +342,11 @@ public class RemixParticleRenderer {
         meshUpdatesThisFrame = 0;
     }
 
-    private RemixMaterial resolveMaterial(boolean isTerrain, BlockTextureManager blockTexMgr) {
-        if (isTerrain) {
+    private RemixMaterial resolveMaterial(Identifier atlas, BlockTextureManager blockTexMgr) {
+        if (TextureAtlas.LOCATION_BLOCKS.equals(atlas)) {
             return blockTexMgr != null ? blockTexMgr.getAtlasMaterial(BlockTextureManager.L_CUTOUT) : null;
         }
+        if (TextureAtlas.LOCATION_ITEMS.equals(atlas)) return itemAtlasManager.getMaterial();
         return atlasManager.getMaterial();
     }
 
@@ -528,6 +538,7 @@ public class RemixParticleRenderer {
             bucket.destroy();
         }
         buckets.clear();
+        itemAtlasManager.cleanup();
 
         if (blendExt != null) {
             blendExt.freeNative();

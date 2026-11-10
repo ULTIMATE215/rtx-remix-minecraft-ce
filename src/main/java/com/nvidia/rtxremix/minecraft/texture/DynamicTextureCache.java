@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.texture;
 
@@ -22,17 +25,10 @@ import net.minecraft.resources.Identifier;
  * Pixel cache for dynamic textures (maps, player skins, etc.) that are not
  * accessible through the resource manager.
  *
- * <p>Textures are captured via two mixin paths:
- * <ul>
- *   <li>{@code NativeImageBackedTextureMixin}, for {@code NativeImageBackedTexture}
- *       instances (capes, etc.)</li>
- *   <li>{@code PlayerSkinTextureMixin}, for {@code PlayerSkinTexture} instances
- *       (player skins downloaded from Mojang CDN)</li>
- * </ul>
- *
- * <p>In both cases, {@code TextureManagerMixin} intercepts {@code registerTexture()}
- * to record the texture-to-identifier mapping in {@link #TEXTURE_IDS}, and the type-specific
- * mixin captures pixel data at upload time via {@link #captureFromUpload}.
+ * <p>{@code TextureManagerMixin} intercepts {@code TextureManager.register} to record
+ * the texture-to-identifier mapping in {@link #TEXTURE_IDS} and capture an available
+ * image immediately. Skins, capes and maps use {@link DynamicTexture}; subsequent
+ * uploads reach {@link #captureFromUpload} through {@code NativeImageBackedTextureMixin}.
  *
  * <p>Font glyph pages are served here too but never snapshotted: Minecraft assembles a
  * page on the GPU one glyph at a time and {@link GlyphPageMirror} follows along, so
@@ -70,8 +66,7 @@ public final class DynamicTextureCache {
             Collections.synchronizedMap(new HashMap<>());
 
     /**
-     * Maps a texture object to its identifier so that upload-time mixins
-     * ({@code NativeImageBackedTextureMixin}, {@code PlayerSkinTextureMixin})
+     * Maps a texture object to its identifier so {@code NativeImageBackedTextureMixin}
      * can look up the id when {@code upload()} fires.  Uses identity semantics
      * since {@code AbstractTexture} does not override {@code equals}/{@code hashCode}.
      */
@@ -95,7 +90,7 @@ public final class DynamicTextureCache {
         }
     }
 
-    /** Registers the mirror of a glyph page under the id {@code FontStorage} gave it. */
+    /** Registers the mirror of a glyph page under its vanilla texture id. */
     public static void onRegisterGlyphPage(Identifier id, GlyphPageMirror page) {
         GLYPH_PAGES.put(id, page);
     }
@@ -104,7 +99,7 @@ public final class DynamicTextureCache {
 
     /**
      * Captures pixel data at upload time, where {@code image} is guaranteed non-null.
-     * Called from {@code NativeImageBackedTextureMixin} and {@code PlayerSkinTextureMixin}.
+     * Called from {@code NativeImageBackedTextureMixin}.
      *
      * @return true if the texture was registered and pixels were stored
      */

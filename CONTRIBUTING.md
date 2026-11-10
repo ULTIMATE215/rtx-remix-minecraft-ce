@@ -1,3 +1,10 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
+SPDX-License-Identifier: Apache-2.0
+
+Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
+-->
+
 # Contributing to RTX Remix for Minecraft
 
 This project is maintained by NVIDIA and released under the Apache License,
@@ -175,10 +182,14 @@ New files need the SPDX header used throughout the tree:
 
 ```java
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
  */
 ```
+
+For modified or adapted upstream files, preserve NVIDIA's SPDX notice and add
+the community credit and `Modified by RTX Remix for Minecraft Community Edition`
+notice described in [COMMUNITY.md](COMMUNITY.md).
 
 PowerShell scripts must be ASCII or start with a UTF-8 BOM. Windows
 PowerShell 5.1, used by `packaging/install.bat`, reads a BOM-less script using
@@ -217,19 +228,16 @@ real render-thread saving.
 
 ### Reading Vanilla Bytecode
 
-The Yarn-named merged JAR Loom already caches is enough for `javap`; generating
-all decompiled sources is not necessary. Read the mappings coordinate in
-`build.gradle` and select its exact cache directory. Old versions remain in
-the cache after a mappings bump. The sibling
-`~/.gradle/caches/fabric-loom/<minecraft-version>/minecraft-merged.jar` is the
-obfuscated merge, not the Yarn-named one.
+Minecraft 26.2 ships with official, unobfuscated names. The matching client JAR
+in Loom's cache is enough for `javap`; generating all decompiled sources is not
+necessary. Read `minecraft_version` in `gradle.properties` and select that exact
+cache directory, since old versions remain after a version change.
 
-For the currently pinned mapping, a Git Bash example is:
+For the current target, a Git Bash example is:
 
 ```bash
-merged=~/.gradle/caches/fabric-loom/minecraftMaven/net/minecraft/minecraft-merged
-version=1.21.1-net.fabricmc.yarn.1_21_1.1.21.1+build.3-v2
-javap -p -c -classpath "$merged/$version/minecraft-merged-$version.jar" net.minecraft.client.render.VertexConsumer
+client_jar=~/.gradle/caches/fabric-loom/26.2/minecraft-client.jar
+javap -p -c -classpath "$client_jar" net.minecraft.client.renderer.LevelRenderer
 ```
 
 If you need to search all callers of a descriptor, extract the whole JAR into
@@ -240,13 +248,13 @@ the extraction afterwards. Do not leave thousands of class files in the tree.
 
 ### Verifying A Mixin Injection
 
-`Mixing X from ... into net.minecraft...` in `run/logs/debug.log` proves
-registration, not an applied injection or an executed target. The check reads
-Loom's Yarn-named development client, which `runClient`, Fabric's standard
-Gradle task, starts from `run/`. Temporarily add `-Dmixin.debug.export=true` to
-the client `vmArgs` in `build.gradle`, launch `runClient`, and disassemble the
-transformed class under
-`run/.mixin.out/class/<package path>/<Class>.class` with `javap -p -c`.
+`Mixing X from ... into net.minecraft...` in the Prism instance's
+`logs/debug.log` proves registration, not an applied injection or an executed
+target. Temporarily add `-Dmixin.debug.export=true` to `launch.jvmArgs` in
+`tools/config.local.json`, launch through `tools\rtx.bat launch` with a signed-in Prism account,
+and disassemble the transformed class under
+`<Prism game directory>/.mixin.out/class/<package path>/<Class>.class` with `javap -p -c`.
+The launcher's dashboard identifies the checkout's instance and game directory.
 Classes are exported at load, so a later shutdown crash does not invalidate
 the export.
 
@@ -254,9 +262,9 @@ An `@Inject` merges a `handler$<id>$rtx-remix-renderer$<handler name>` method
 and a call at the intended offset: `invokespecial` for a private instance
 handler, `invokestatic` for a static one. If the call is present but does not
 fire, investigate vanilla's frustum, dimension, cloud-mode and weather gates.
-Exports and the classes loaded from `build/classes/` use Yarn names. The
-remapped JAR in `build/libs/` instead embeds intermediary `method_NNNNN` names
-in injection annotations. Remove the diagnostic flag and export afterwards.
+Exports, source, and the packaged 26.2 JAR use official names; do not search for
+Yarn or intermediary names from older branches. Remove the diagnostic flag and
+export afterwards.
 
 ## Tests
 
@@ -277,7 +285,7 @@ position, are the most useful thing you can attach.
 
 For wrapper changes, the same root Gradle workflow compiles the shim with its
 mod callers and builds the bridge into `build/native/{win64|arm64}/`.
-Visual Studio C++ tools and `JAVA_HOME` pointing to a 64-bit JDK 21 are
+Visual Studio C++ tools and `JAVA_HOME` pointing to a 64-bit JDK 25 are
 required. Gradle fetches the pinned runtime automatically when it is missing.
 Use `.\tools\rtx.bat sdk local --path <runtime dir> --arch win64` for a local build,
 as described in [Getting Started](docs/GETTING_STARTED.md#get-a-runtime).
@@ -370,7 +378,8 @@ runners. [`check`](.github/workflows/check.yml) installs uv and runs
 `tools\rtx.bat check --tests`: Ruff formatting and lint, ty, the Python tests,
 and the public-boundary gate. On a pull request it also scans the commit
 messages from the base SHA to the head SHA.
-[`build`](.github/workflows/build.yml) installs JDK 21 and runs
+[`build`](.github/workflows/build.yml) installs the JDK from `release_java_version`
+(25 on this branch) and runs
 `gradlew.bat build test`. Both use read-only repository permissions and no
 secrets, including for fork pull requests. The build fetches the pinned
 runtime from public Packman, so it needs no credentials; never add private

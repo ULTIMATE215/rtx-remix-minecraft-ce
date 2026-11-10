@@ -1,29 +1,33 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.entity;
 
 import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.vertex.QuadInstance;
-import com.mojang.blaze3d.vertex.SheetedDecalTextureGenerator;
-import com.mojang.blaze3d.vertex.VertexConsumer;
+import com.nvidia.rtxremix.minecraft.mixin.FeatureRenderDispatcherAccessor;
+import java.util.Arrays;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
 import net.minecraft.client.Camera;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.model.Model;
+import net.minecraft.client.particle.SingleQuadParticle;
 import net.minecraft.client.renderer.SubmitNodeCollection;
 import net.minecraft.client.renderer.SubmitNodeStorage;
-import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
-import net.minecraft.client.renderer.feature.BlockModelFeatureRenderer;
-import net.minecraft.client.renderer.feature.CustomFeatureRenderer;
-import net.minecraft.client.renderer.feature.ItemFeatureRenderer;
-import net.minecraft.client.renderer.feature.ModelFeatureRenderer;
+import net.minecraft.client.renderer.feature.FeatureFrameContext;
+import net.minecraft.client.renderer.feature.FeatureRenderer;
+import net.minecraft.client.renderer.feature.FeatureRendererMap;
+import net.minecraft.client.renderer.feature.QuadParticleFeatureRenderer;
+import net.minecraft.client.renderer.feature.ShadowFeatureRenderer;
 import net.minecraft.client.renderer.feature.phase.FeatureRenderPhase;
 import net.minecraft.client.renderer.feature.submit.SubmitNode;
+import net.minecraft.client.renderer.rendertype.RenderSetup;
+import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
-import net.minecraft.client.resources.model.geometry.BakedQuad;
-import net.minecraft.core.Direction;
-import net.minecraft.util.ARGB;
 
 /**
  * Bridges the submit model to the capture providers.
@@ -38,14 +42,15 @@ import net.minecraft.util.ARGB;
  */
 final class RemixCommandCapture implements AutoCloseable {
 
-    private static final Direction[] DIRECTIONS = Direction.values();
     private static final FeatureRenderPhase.Output DISCARD = (submit, strictlyOrdered) -> { };
 
-    private final SubmitNodeStorage queue = new SubmitNodeStorage();
+    private final RemixSubmitNodeStorage queue = new RemixSubmitNodeStorage(this);
     private final RemixBufferSource provider;
     private final CameraRenderState cameraState = new CameraRenderState();
-    private final PoseStack replayStack = new PoseStack();
-    private final QuadInstance quadInstance = new QuadInstance();
+    private final List<SubmitNode> singleSubmit = Arrays.asList(new SubmitNode[1]);
+    private final Map<SingleQuadParticle.Layer, RenderType> particleLayers = new IdentityHashMap<>();
+    private FeatureFrameContext frameContext;
+    private FeatureRendererMap featureRenderers;
     private final FeatureRenderPhase.Output replay = (submit, strictlyOrdered) -> replay(submit);
 
     RemixCommandCapture(RemixBufferSource provider) {
@@ -54,6 +59,10 @@ final class RemixCommandCapture implements AutoCloseable {
 
     SubmitNodeStorage queue() {
         return queue;
+    }
+
+    void emitHeldEffects(ItemCaptureState item, PoseStack matrices, float displayScale) {
+        HeldItemEffectsRenderer.render(item.stack(), item.mode(), matrices, provider, displayScale);
     }
 
     /** Camera state for renderers that orient labels or billboards toward the viewer. */
@@ -73,17 +82,16 @@ final class RemixCommandCapture implements AutoCloseable {
 
     /** Replays every queued command into the capture provider and clears the queue. */
     void flush() {
+        prepareContext();
         for (SubmitNodeCollection collection : queue.getSubmitsPerOrder().values()) {
             for (FeatureRenderPhase<?> phase : collection.allPhases()) {
                 if (phase.isEmpty()) {
                     continue;
                 }
-                // Crumbling overlays and outlines have no Remix consumer; they go nowhere.
-                boolean skip = phase == collection.breakingOverlay || phase == collection.outline;
+                boolean skip = phase == collection.outline;
                 phase.sortInto(skip ? DISCARD : replay);
             }
         }
-        queue.getSubmitsPerOrder().clear();
     }
 
     /** Drops queued commands without replaying them, after a renderer threw. */
@@ -95,82 +103,64 @@ final class RemixCommandCapture implements AutoCloseable {
                 }
             }
         }
-        queue.getSubmitsPerOrder().clear();
+    }
+
+    private void prepareContext() {
+        Minecraft client = Minecraft.getInstance();
+        var gameRenderer = client.gameRenderer;
+        var options = gameRenderer.gameRenderState().optionsRenderState;
+        var models = client.getModelManager().getBlockStateModelSet();
+        var lightmap = gameRenderer.lightmap();
+        if (frameContext == null || frameContext.options() != options
+                || frameContext.blockStateModelSet() != models || frameContext.lightmap() != lightmap) {
+            frameContext = new FeatureFrameContext(options, client.font, models,
+                    client.getBlockColors(), client.getTextureManager(), client.getAtlasManager(),
+                    lightmap, gameRenderer.renderBuffers().stagedVertexBuffer());
+        }
+        featureRenderers = ((FeatureRenderDispatcherAccessor) gameRenderer.featureRenderDispatcher())
+                .rtxremix$getFeatureRenderers();
     }
 
     private void replay(SubmitNode submit) {
-        if (submit instanceof ModelFeatureRenderer.Submit<?> model) {
-            replayModel(model);
-        } else if (submit instanceof CustomFeatureRenderer.Submit custom) {
-            custom.customGeometryRenderer().render(custom.pose(), provider.getBuffer(custom.renderType()));
-        } else if (submit instanceof ItemFeatureRenderer.Submit item) {
-            replayItem(item);
-        } else if (submit instanceof BlockModelFeatureRenderer.Submit block) {
-            replayBlockModel(block);
-        }
-        // TODO(26.2): text, name tags, leashes, flames, moving blocks and shadows are
-        // not replayed; their feature renderers no longer take a buffer source.
-    }
-
-    private <S> void replayModel(ModelFeatureRenderer.Submit<S> submit) {
-        replayStack.last().set(submit.pose());
-        VertexConsumer buffer = provider.getBuffer(submit.renderType());
-        if (submit.sheetedDecalPose() != null) {
-            buffer = new SheetedDecalTextureGenerator(buffer, submit.sheetedDecalPose(), 1.0F);
-        } else if (submit.sprite() != null) {
-            buffer = submit.sprite().wrap(buffer);
-        }
-        Model<? super S> model = submit.model();
-        model.setupAnim(submit.state());
-        model.renderToBuffer(replayStack, buffer, submit.lightCoords(), submit.overlayCoords(),
-                submit.tintedColor());
-    }
-
-    private void replayItem(ItemFeatureRenderer.Submit submit) {
-        if (submit.outlineColor() != 0) {
+        // Remix traces the entity's geometry; vanilla's blob-shadow decals would light it twice.
+        if (submit instanceof ShadowFeatureRenderer.Submit) {
             return;
         }
-        quadInstance.setLightCoords(submit.lightCoords());
-        quadInstance.setOverlayCoords(submit.overlayCoords());
-        int[] tints = submit.tintLayers();
-        for (BakedQuad quad : submit.quads()) {
-            BakedQuad.MaterialInfo material = quad.materialInfo();
-            int tint = material.isTinted() && material.tintIndex() < tints.length
-                    ? tints[material.tintIndex()] : -1;
-            quadInstance.setColor(tint);
-            provider.getBuffer(material.itemRenderType()).putBakedQuad(submit.pose(), quad, quadInstance);
+        if (submit instanceof QuadParticleFeatureRenderer.Submit particles) {
+            replayParticles(particles);
+            return;
         }
-        // TODO(26.2): the enchantment glint pass is not replayed.
-    }
-
-    private void replayBlockModel(BlockModelFeatureRenderer.Submit submit) {
-        VertexConsumer buffer = provider.getBuffer(submit.renderType());
-        if (submit.sheetedDecalPose() != null) {
-            buffer = new SheetedDecalTextureGenerator(buffer, submit.sheetedDecalPose(), 1.0F);
+        FeatureRenderer<?> renderer = featureRenderers.getOrThrow(submit.featureType());
+        if (!(renderer instanceof RemixFeatureRenderer capture)) {
+            throw new IllegalStateException("Feature has no CPU vertex output: " + submit.featureType());
         }
-        quadInstance.setLightCoords(submit.lightCoords());
-        quadInstance.setOverlayCoords(submit.overlayCoords());
-        for (BlockStateModelPart part : submit.modelParts()) {
-            for (Direction direction : DIRECTIONS) {
-                putBlockQuads(part, direction, submit, buffer);
-            }
-            putBlockQuads(part, null, submit, buffer);
+        singleSubmit.set(0, submit);
+        try {
+            RemixFeatureCapture.replay(capture, frameContext, singleSubmit, provider);
+        } finally {
+            singleSubmit.set(0, null);
         }
     }
 
-    private void putBlockQuads(BlockStateModelPart part, Direction direction,
-                               BlockModelFeatureRenderer.Submit submit, VertexConsumer buffer) {
-        int[] tints = submit.tintLayers();
-        for (BakedQuad quad : part.getQuads(direction)) {
-            int tintIndex = quad.materialInfo().tintIndex();
-            boolean useTint = tintIndex != -1 && tintIndex < tints.length;
-            quadInstance.setColor(useTint ? ARGB.multiply(submit.tintColor(), tints[tintIndex]) : submit.tintColor());
-            buffer.putBakedQuad(submit.pose(), quad, quadInstance);
+    private void replayParticles(QuadParticleFeatureRenderer.Submit submit) {
+        var particles = submit.particles();
+        for (SingleQuadParticle.Layer layer : particles.layers()) {
+            if (layer.translucent() != submit.translucent()) continue;
+            RenderType renderType = particleLayers.computeIfAbsent(layer, key -> RenderType.create(
+                    "rtxremix_particle_capture", RenderSetup.builder(key.pipeline())
+                            .withTexture("Sampler0", key.textureAtlasLocation()).createRenderSetup()));
+            // Particle vertices omit normals. The capture consumer finishes them at the
+            // next position (or end of capture), deriving each quad's geometric normal.
+            particles.buildLayer(layer, provider.getBuffer(renderType));
         }
     }
 
     @Override
     public void close() {
         discard();
+        queue.getSubmitsPerOrder().clear();
+        frameContext = null;
+        featureRenderers = null;
+        particleLayers.clear();
     }
 }

@@ -35,6 +35,10 @@ import java.nio.charset.StandardCharsets;
  * into what that texel held, so four updates refresh the whole sky and noise averages out; a
  * camera jump, a time skip, or a new cloud base marches everything at once.
  *
+ * <p>The image an update returns is a persistently mapped readback the caller may keep reading
+ * across frames: it stays held, out of the readback ring's rotation, until the caller releases
+ * it or takes a newer one, so the sky can upload a large dome a band per frame.
+ *
  * <p>Render thread only, with the GL context current. Texture units 16–22 and image units 0–3
  * are bound only during an update and released afterwards; vanilla tracks units 0–11 only.
  */
@@ -44,7 +48,8 @@ public final class CloudSkyCompositor {
     private static final int PASS_CLOUD = 0;
     private static final int PASS_COMPOSE = 1;
     private static final int PASS_REDUCE = 2;
-    private static final int READBACK_RING_SIZE = 3;
+    /** Readback buffers in flight or held; the sky sizes its per-buffer band view cache by this. */
+    public static final int READBACK_RING_SIZE = 3;
     private static final int UNIT_OCCUPANCY = 6;
     private static final int UNIT_ATMOSPHERE = 8;
     private static final int UNIT_TRANSMITTANCE = 9;
@@ -94,9 +99,7 @@ public final class CloudSkyCompositor {
     private final long[] readbackFences = new long[READBACK_RING_SIZE];
     private final long[] readbackGenerations = new long[READBACK_RING_SIZE];
     private long generation;
-    private int readbackWriteIndex;
-    private int readbackReadIndex;
-    private int pendingReadbacks;
+    private final ReadbackRing readbackRing = new ReadbackRing(READBACK_RING_SIZE);
 
     private long lastUpdateTick = Long.MIN_VALUE;
     private int updateIndex;
@@ -107,12 +110,78 @@ public final class CloudSkyCompositor {
     private final float[] occlusionScratch =
             new float[VolumetricClouds.OCCLUSION_MAP_WIDTH * VolumetricClouds.OCCLUSION_MAP_HEIGHT];
 
-    /** Lights and camera for one update; directions are world space. */
-    public record Inputs(float[] sunDirection, float[] moonDirection,
-                         float[] sunIlluminance, float[] moonIlluminance,
-                         float sunAngularRadius, float moonAngularRadius,
-                         double cameraX, double cameraY, double cameraZ,
-                         double dayTime, boolean physicalAtmosphere, float skyFill) {}
+    /**
+     * Lights and camera for one update; directions are world space.
+     *
+     * <p>Mutable and reused: the sky fills one instance per frame through {@link #set}, because
+     * a fresh object every frame is garbage on the render thread for no benefit. {@link #set}
+     * copies the vectors into arrays this instance owns, so a caller may keep reusing its own
+     * scratch arrays, and nothing that reads an {@code Inputs} may keep it past the call it was
+     * passed to; {@link CloudHistory} copies the values it remembers. The accessors keep the
+     * names of the record this used to be.
+     */
+    public static final class Inputs {
+        private final float[] sunDirection = new float[3];
+        private final float[] moonDirection = new float[3];
+        private final float[] sunIlluminance = new float[3];
+        private final float[] moonIlluminance = new float[3];
+        private float sunAngularRadius;
+        private float moonAngularRadius;
+        private double cameraX;
+        private double cameraY;
+        private double cameraZ;
+        private double dayTime;
+        private boolean physicalAtmosphere;
+        private float skyFill;
+
+        /** An all-zero frame, to be filled with {@link #set} before use. */
+        public Inputs() {}
+
+        public Inputs(float[] sunDirection, float[] moonDirection,
+                      float[] sunIlluminance, float[] moonIlluminance,
+                      float sunAngularRadius, float moonAngularRadius,
+                      double cameraX, double cameraY, double cameraZ,
+                      double dayTime, boolean physicalAtmosphere, float skyFill) {
+            set(sunDirection, moonDirection, sunIlluminance, moonIlluminance,
+                    sunAngularRadius, moonAngularRadius, cameraX, cameraY, cameraZ,
+                    dayTime, physicalAtmosphere, skyFill);
+        }
+
+        /** Replaces every value; the vectors are copied, never retained. Allocates nothing. */
+        public Inputs set(float[] sunDirection, float[] moonDirection,
+                          float[] sunIlluminance, float[] moonIlluminance,
+                          float sunAngularRadius, float moonAngularRadius,
+                          double cameraX, double cameraY, double cameraZ,
+                          double dayTime, boolean physicalAtmosphere, float skyFill) {
+            System.arraycopy(sunDirection, 0, this.sunDirection, 0, 3);
+            System.arraycopy(moonDirection, 0, this.moonDirection, 0, 3);
+            System.arraycopy(sunIlluminance, 0, this.sunIlluminance, 0, 3);
+            System.arraycopy(moonIlluminance, 0, this.moonIlluminance, 0, 3);
+            this.sunAngularRadius = sunAngularRadius;
+            this.moonAngularRadius = moonAngularRadius;
+            this.cameraX = cameraX;
+            this.cameraY = cameraY;
+            this.cameraZ = cameraZ;
+            this.dayTime = dayTime;
+            this.physicalAtmosphere = physicalAtmosphere;
+            this.skyFill = skyFill;
+            return this;
+        }
+
+        /** This instance's own array; writes to it change this frame. */
+        public float[] sunDirection() { return sunDirection; }
+        public float[] moonDirection() { return moonDirection; }
+        public float[] sunIlluminance() { return sunIlluminance; }
+        public float[] moonIlluminance() { return moonIlluminance; }
+        public float sunAngularRadius() { return sunAngularRadius; }
+        public float moonAngularRadius() { return moonAngularRadius; }
+        public double cameraX() { return cameraX; }
+        public double cameraY() { return cameraY; }
+        public double cameraZ() { return cameraZ; }
+        public double dayTime() { return dayTime; }
+        public boolean physicalAtmosphere() { return physicalAtmosphere; }
+        public float skyFill() { return skyFill; }
+    }
 
     public CloudSkyCompositor(VolumetricClouds.Quality quality, int atmosphereWidth, int atmosphereHeight) {
         if (!GL.getCapabilities().OpenGL44) {
@@ -161,7 +230,12 @@ public final class CloudSkyCompositor {
      * @param atmosphereTexture the atmosphere panorama (with its mean row) to composite over
      * @param transmittanceLut the atmosphere's transmittance LUT
      * @param upperMean receives the composited upper-hemisphere mean when a readback is returned
-     * @return the finished dome image (width × height RGBA16F), or null when none is ready
+     * @return the finished dome image (width × height RGBA16F), or null when none is ready. The
+     *         buffer is a persistently mapped readback slot that stays <em>held</em>: no later
+     *         readback is written into it until {@link #releaseHeldReadback()}, until a later
+     *         call returns a newer image (which takes over the hold), or until the history is
+     *         discarded, which {@link #holdsReadback()} reports. That is what lets the sky upload
+     *         it a band per frame across several frames.
      */
     public ByteBuffer update(int atmosphereTexture, int transmittanceLut, Inputs inputs, float[] upperMean) {
         CloudNoise noise = CloudNoise.sharedIfReady();
@@ -188,6 +262,24 @@ public final class CloudSkyCompositor {
         return consumeCompletedReadback(upperMean);
     }
 
+    /**
+     * Whether the image the last non-null {@link #update} returned is still held, so reading it
+     * is safe. False once it was released or the history was discarded; a reader must then stop
+     * using that buffer, because the GPU may already be writing a new readback into it.
+     */
+    public boolean holdsReadback() {
+        return readbackRing.holds();
+    }
+
+    /**
+     * Returns the held image's slot to the ring once the reader no longer needs it. Until then
+     * the ring has one slot fewer for readbacks in flight, and an update that finds no free
+     * slot keeps its march on the GPU but skips the readback. Harmless when nothing is held.
+     */
+    public void releaseHeldReadback() {
+        readbackRing.release();
+    }
+
     /** Forgets the accumulated sky and its published results, for a new world. */
     public void invalidate() {
         discardHistory();
@@ -208,6 +300,11 @@ public final class CloudSkyCompositor {
         history.invalidate();
         generation++;
         lastUpdateTick = Long.MIN_VALUE;
+        // The held image belongs to the scene just discarded, and the reader must not finish
+        // publishing it. Releasing it here also keeps the ring's one-slot invariant: every
+        // readback still in flight now has an older generation and will be dropped unread,
+        // which must not happen while an even older slot stays held behind them.
+        readbackRing.release();
     }
 
     /**
@@ -386,32 +483,36 @@ public final class CloudSkyCompositor {
     }
 
     private void enqueueReadback() {
-        if (pendingReadbacks == READBACK_RING_SIZE) {
+        // A full ring, counting the slot the sky is still uploading from, skips the readback
+        // rather than writing into memory a band upload may read this frame or the next.
+        if (!readbackRing.canEnqueue()) {
             return;
         }
-        GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, readbackBuffers[readbackWriteIndex]);
+        int index = readbackRing.writeIndex();
+        GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, readbackBuffers[index]);
         bindTexture(UNIT_ATMOSPHERE, GL11.GL_TEXTURE_2D, finalSky);
         GL11.glGetTexImage(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, GL30.GL_HALF_FLOAT, 0L);
-        readbackFences[readbackWriteIndex] = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
-        readbackGenerations[readbackWriteIndex] = generation;
-        readbackWriteIndex = (readbackWriteIndex + 1) % READBACK_RING_SIZE;
-        pendingReadbacks++;
+        readbackFences[index] = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        readbackGenerations[index] = generation;
+        readbackRing.enqueued();
     }
 
     private ByteBuffer consumeCompletedReadback(float[] upperMean) {
-        while (pendingReadbacks > 0) {
-            long fence = readbackFences[readbackReadIndex];
+        while (readbackRing.pending() > 0) {
+            int index = readbackRing.oldestPending();
+            long fence = readbackFences[index];
             int status = GL32.glClientWaitSync(fence, 0, 0L);
             if (status != GL32.GL_ALREADY_SIGNALED && status != GL32.GL_CONDITION_SATISFIED) {
                 return null;
             }
             GL32.glDeleteSync(fence);
-            readbackFences[readbackReadIndex] = 0L;
-            int index = readbackReadIndex;
-            readbackReadIndex = (readbackReadIndex + 1) % READBACK_RING_SIZE;
-            pendingReadbacks--;
+            readbackFences[index] = 0L;
             // Keep in-flight buffers fenced until completion, but never publish an older scene.
-            if (readbackGenerations[index] == generation) {
+            // The returned slot becomes the held one, releasing any slot held before it: the
+            // reader switches to the newer image in the same frame.
+            boolean current = readbackGenerations[index] == generation;
+            readbackRing.consumeOldest(current);
+            if (current) {
                 return decodeReadback(mappedReadbacks[index], upperMean);
             }
         }
@@ -577,7 +678,7 @@ public final class CloudSkyCompositor {
             }
         }
         GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, 0);
-        pendingReadbacks = 0;
+        readbackRing.reset();
         for (int texture : new int[]{cloudLayer, cloudDepth, finalSky, partial, baseNoise, detailNoise, weatherMap,
                 occupancyTexture}) {
             if (texture != 0) {
@@ -606,6 +707,101 @@ public final class CloudSkyCompositor {
         int error = GL11.glGetError();
         if (error != GL11.GL_NO_ERROR) {
             throw new IllegalStateException(operation + " failed with OpenGL error 0x" + Integer.toHexString(error));
+        }
+    }
+
+    /**
+     * Slot accounting for the readback ring, kept apart from GL so it can be tested.
+     *
+     * <p>Slots are written in ring order and read back in the same order. A consumed slot can
+     * stay <em>held</em> while its reader still uploads from it; at most one slot is held, and
+     * consuming a newer one moves the hold to it. The held slot is always the one just behind
+     * the oldest pending slot, so the next write would land on it exactly when
+     * {@code pending + held == size}; {@link #canEnqueue()} refuses then, and also refuses
+     * outright whenever the write index names the held slot, so a dropped stale slot can never
+     * open a path to overwriting the held one.
+     */
+    static final class ReadbackRing {
+        private final int size;
+        private int writeIndex;
+        private int readIndex;
+        private int pending;
+        private int held = -1;
+
+        ReadbackRing(int size) {
+            if (size < 2) {
+                throw new IllegalArgumentException("A readback ring needs at least two slots: " + size);
+            }
+            this.size = size;
+        }
+
+        /** Whether a readback may be written into {@link #writeIndex()} now. */
+        boolean canEnqueue() {
+            return pending + (held >= 0 ? 1 : 0) < size && writeIndex != held;
+        }
+
+        /** The slot the next readback is written into; only valid when {@link #canEnqueue()}. */
+        int writeIndex() {
+            return writeIndex;
+        }
+
+        /** Records that a readback was written into {@link #writeIndex()}. */
+        void enqueued() {
+            if (!canEnqueue()) {
+                throw new IllegalStateException("Readback ring has no free slot");
+            }
+            writeIndex = (writeIndex + 1) % size;
+            pending++;
+        }
+
+        int pending() {
+            return pending;
+        }
+
+        /** The oldest slot still in flight; only valid while {@link #pending()} is positive. */
+        int oldestPending() {
+            return readIndex;
+        }
+
+        /**
+         * Takes the oldest pending slot off the queue.
+         *
+         * @param hold whether its reader keeps it, which releases any slot held before; a slot
+         *             dropped unread (an older scene) is free at once and leaves the hold alone
+         * @return the slot
+         */
+        int consumeOldest(boolean hold) {
+            if (pending == 0) {
+                throw new IllegalStateException("No readback is pending");
+            }
+            int index = readIndex;
+            readIndex = (readIndex + 1) % size;
+            pending--;
+            if (hold) {
+                held = index;
+            }
+            return index;
+        }
+
+        boolean holds() {
+            return held >= 0;
+        }
+
+        /** The held slot, or -1. */
+        int heldIndex() {
+            return held;
+        }
+
+        void release() {
+            held = -1;
+        }
+
+        /** Forgets every slot, for when the buffers themselves are deleted. */
+        void reset() {
+            writeIndex = 0;
+            readIndex = 0;
+            pending = 0;
+            held = -1;
         }
     }
 

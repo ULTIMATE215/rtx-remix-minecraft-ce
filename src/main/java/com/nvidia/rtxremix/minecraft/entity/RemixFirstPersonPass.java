@@ -329,5 +329,6 @@ public final class RemixFirstPersonPass implements AutoCloseable {
     public void close() {
         clearPending();
         commandCapture.close();
+        provider.clear();
     }
 }

@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
@@ -157,7 +160,7 @@ public class SectionBuilderMixin {
         if (rtxremix$capturing()) {
             BlockQuadEmitter emitter = BlockQuadEmitter.threadLocal();
             if (!emitter.isActive()) return;
-            emitter.emitFluid(pos, world, fluidState);
+            emitter.emitFluid(brm, pos, world, blockState, fluidState);
         } else {
             brm.tesselate(world, pos, consumer, blockState, fluidState);
         }

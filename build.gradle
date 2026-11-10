@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 
 import javax.inject.Inject
@@ -43,6 +46,7 @@ logger.lifecycle("Build target arches: ${buildArches.join(', ')}" +
 
 def archSuffix = isSingleArchJar ? "-${archProperty}" : ''
 def minecraftVersion = providers.gradleProperty('minecraft_version').get()
+def javaVersion = providers.gradleProperty('release_java_version').get().toInteger()
 // -Prelease builds the published artifact: <mod_version>+mc<minecraft_version>,
 // with no timestamp or commit hash, so each GitHub Release names its target.
 def isReleaseBuild = project.hasProperty('release')
@@ -135,7 +139,7 @@ repositories {
 // Minecraft 26.x requires Java 25
 java {
     toolchain {
-        languageVersion = JavaLanguageVersion.of(25)
+        languageVersion = JavaLanguageVersion.of(javaVersion)
     }
     withSourcesJar()
 }
@@ -163,15 +167,14 @@ loom {
     runs {
         client {
             // Keep in sync with RECOMMENDED_JVM_ARGS in packaging/installer.ps1.
-            // Minecraft Launcher 1.21.1 defaults for supported Windows arches:
-            // version metadata supplies HeapDumpPath; the profile supplies G1.
+            // Recommended G1 settings for the mod on supported Windows architectures.
             vmArgs "-Xmx2G", "-XX:+UnlockExperimentalVMOptions", "-XX:+UseG1GC",
                    "-XX:G1NewSizePercent=20", "-XX:G1ReservePercent=20",
                    "-XX:MaxGCPauseMillis=50", "-XX:G1HeapRegionSize=32M",
                    "-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump"
             if (benchmarkJfrPath.isPresent()) {
                 def jfrPath = benchmarkJfrPath.get().replace('\\', '/')
-                // maxsize=0 lifts JDK 21's 250 MB default disk cap so a long
+                // maxsize=0 lifts JFR's 250 MB default disk cap so a long
                 // recording keeps its earliest frames.
                 def jfrRecording = "name=rtx-benchmark,settings=profile,disk=true,dumponexit=false,maxsize=0"
                 if (benchmarkJfrThrowables.get().toBoolean()) {
@@ -291,7 +294,7 @@ processResources {
 
 tasks.withType(JavaCompile).configureEach {
     options.encoding = "UTF-8"
-    options.release = 25
+    options.release = javaVersion
 }
 
 def currentRuntimeArch = System.getProperty("os.arch") == "aarch64" ? "arm64" : "win64"

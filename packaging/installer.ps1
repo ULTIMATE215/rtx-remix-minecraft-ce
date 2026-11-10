@@ -135,7 +135,7 @@ param(
 $ErrorActionPreference = 'Continue'
 
 # --- Constants (kept in sync with build.gradle / rtxremix-java) ---
-$script:APP_VERSION          = '0.1.0-ce.6'
+$script:APP_VERSION          = '0.1.0-ce.7'
 $script:PRISM_INSTANCE_NAME  = 'NVIDIA RTX Remix for Minecraft'
 # Legacy instance names kept for backward detection only; prior installs
 # used shorter / differently-worded names. Ordered newest-to-oldest.
@@ -2358,12 +2358,12 @@ function Write-MsLauncherJvmArgs {
 function Confirm-JvmArgsOverwrite {
     param([string]$Label, [string]$Current, [string]$Recommended, [string[]]$Note)
     Write-Host ''
-    Write-Host "  $($script:ICON_WARN) $($script:C_YELLOW)$Label$($script:C_RESET) has custom JVM args that differ from the Minecraft 1.21.1 launcher defaults."
+    Write-Host "  $($script:ICON_WARN) $($script:C_YELLOW)$Label$($script:C_RESET) has custom JVM args that differ from the recommended mod settings."
     Write-Host ''
     Write-Host "     $($script:C_BOLD)Current:$($script:C_RESET)     $($script:C_DIM)$Current$($script:C_RESET)"
     Write-Host "     $($script:C_BOLD)Recommended:$($script:C_RESET) $($script:C_DIM)$Recommended$($script:C_RESET)"
     Write-Host ''
-    Write-Host '  Minecraft 1.21.1 launcher defaults use G1GC and a 2 GB heap. Custom'
+    Write-Host '  The recommended settings use G1GC and a 2 GB heap. Custom'
     Write-Host '  args may include profiling flags, test toggles, or more memory.'
     foreach ($line in $Note) { if ($line) { Write-Host "  $line" } }
     return (Confirm-YesNo -Prompt 'Overwrite current JVM args with launcher defaults?' -DefaultNo)
@@ -2389,7 +2389,7 @@ function Initialize-Prism {
     if ($State.PrismNamed -and (Test-Path -LiteralPath (Join-Path $instanceDir 'instance.cfg'))) {
         Write-FileAtomic -Path $script:PRISM_DATA_DIR_RECORD -Content $State.PrismDataDir
     }
-    Write-Info 'Configuring Minecraft 1.21.1 launcher JVM defaults...'
+    Write-Info 'Configuring recommended mod JVM settings...'
     Sync-JvmArgs -For Prism -PrismCfg (Join-Path $instanceDir 'instance.cfg') -Unattended:$Unattended
     Set-PrismJavaPin -InstanceCfg (Join-Path $instanceDir 'instance.cfg')
     return $instanceDir
@@ -2447,7 +2447,7 @@ function Initialize-MicrosoftLauncher {
         }
     }
     Set-MsLauncherProfileName
-    Write-Info 'Configuring Minecraft 1.21.1 launcher JVM defaults on the Fabric profile...'
+    Write-Info 'Configuring recommended mod JVM settings on the Fabric profile...'
     Sync-JvmArgs -For Microsoft -Unattended:$Unattended
 }
 

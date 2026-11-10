@@ -1,23 +1,33 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
+SPDX-License-Identifier: Apache-2.0
+
+Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
+-->
+
 # RTX Remix for Minecraft
 
 > **RTX Remix for Minecraft Community Edition (Unofficial).** An unofficial derivative of
 > [NVIDIAGameWorks/rtx-remix-minecraft](https://github.com/NVIDIAGameWorks/rtx-remix-minecraft)
 > at commit `a518eff`, with lighting, weather, water, night sky, and motion blur improvements.
 > Not affiliated with or endorsed by NVIDIA. See [COMMUNITY.md](COMMUNITY.md) for what changed
-> and how it is maintained. The rest of this README is upstream's.
+> and how it is maintained. This branch targets Minecraft 26.2.
 >
 > **RTX Remix for Minecraft 社区版（非官方）**，基于上方官方仓库的衍生版本，与 NVIDIA 无关联。
 > 改动与维护方式见 [COMMUNITY.md](COMMUNITY.md)。
 >
-> **Downloads / 下载**: every supported Minecraft version has its own full installer package on
+> **Downloads / 下载**: select a package for your exact Minecraft version on
 > [Releases](https://github.com/CuteEthanLeo/rtx-remix-minecraft-ce/releases), tagged
-> `v<mod version>+mc<Minecraft version>`. The `main` branch targets the newest supported
-> Minecraft version; older versions live on `mc/<version>` branches.
-> 每个支持的 Minecraft 版本在 Releases 中都有独立的完整安装包。
+> `v<mod version>+mc<Minecraft version>`. Version-specific sources live on `mc/<version>` branches.
+> The 26.2 source aligns with 1.21.1 ce.7. The dedicated
+> [Build Minecraft 26.2 workflow](.github/workflows/build-26.2.yml) builds a Windows x64 installer
+> on pushes to `mc/26.2`; download it from the successful run's artifacts. Tests are excluded
+> from that workflow, and game rendering remains unverified.
+> 26.2 分支通过专用 Actions 工作流编译打包，安装包见成功运行的产物；本次不运行测试或游戏验证。
 
 
-Play Minecraft Java Edition 1.21.1 with real-time path tracing on a GeForce RTX
-GPU, powered by NVIDIA RTX Remix.
+This Fabric mod renders Minecraft Java Edition 26.2 through NVIDIA RTX Remix
+for real-time path tracing on a GeForce RTX GPU.
 
 ## What To Expect
 
@@ -37,9 +47,8 @@ Three areas have had less attention than the rest:
   conflict with anything that changes rendering or the chunk pipeline.
 - **A full playthrough.** Blocks, mobs, dimensions, and situations the showcase
   never reaches have had less care, and some will look wrong or run slowly.
-- **Other versions.** It targets Minecraft 1.21.1 only, chosen because that is
-  where the modding community is today. Ports to newer versions are something
-  we hope the community takes on.
+- **Other versions.** This branch targets Minecraft 26.2. Use the matching
+  `mc/<version>` branch and release package for another Minecraft version.
 
 We hope the community helps fill it out. If something breaks,
 [report it](docs/PLAYING.md#reporting-a-bug); if you can fix it, see
@@ -48,7 +57,9 @@ We hope the community helps fill it out. If something breaks,
 ## Download
 
 Download the release archive from the
-[Releases page](https://github.com/NVIDIAGameWorks/rtx-remix-minecraft/releases/latest).
+[Releases page](https://github.com/CuteEthanLeo/rtx-remix-minecraft-ce/releases),
+choosing a tag ending in `+mc26.2`. For branch builds, use the installer artifact
+from the successful **Build Minecraft 26.2** Actions run.
 
 ## Install in three steps
 
@@ -62,7 +73,7 @@ The step-by-step version, with launcher advice and troubleshooting, is in
 ## Requirements
 
 - Windows 10 or 11, x64 or ARM64.
-- Minecraft Java Edition 1.21.1, on a Microsoft account that owns the game.
+- Minecraft Java Edition 26.2, on a Microsoft account that owns the game.
 - A GeForce RTX 30-series or newer GPU with NVIDIA driver 616.92 or newer.
 - About 5 GB of free disk space while installing; about 3 GB stays in use.
 - An internet connection while the installer runs.

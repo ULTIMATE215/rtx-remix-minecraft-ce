@@ -1,11 +1,24 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.entity;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import net.fabricmc.fabric.api.client.renderer.v1.Renderer;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadEmitter;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadView;
+import net.fabricmc.fabric.api.client.renderer.v1.model.FabricBlockStateModel;
+import net.minecraft.client.renderer.block.BlockAndTintGetter;
+import net.minecraft.client.renderer.block.BlockStateModelSet;
+import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
+import net.minecraft.client.renderer.feature.ModelFeatureRenderer.CrumblingOverlay;
+import net.minecraft.client.renderer.state.level.BlockBreakingRenderState;
+import net.minecraft.world.level.levelgen.SingleThreadedRandomSource;
 import com.nvidia.rtxremix.InstanceCategoryBit;
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import org.joml.Quaternionf;
@@ -24,15 +37,15 @@ import net.minecraft.world.phys.Vec3;
  * Captures the block-breaking crack where vanilla draws it and submits it through the
  * entity submitter as a decal over the terrain.
  *
- * <p>{@code WorldRendererMixin} wraps vanilla's {@code BlockRenderManager.renderDamage}
- * call and routes it to {@code RemixRenderer.renderBlockDamageInPlace}, which calls
- * {@link #capture}. The block model is rendered on this pass's identity
+ * <p>{@code WorldRendererMixin} intercepts {@code LevelRenderer.submitBlockDestroyAnimation}
+ * and routes its extracted state to {@code RemixRenderer.renderBlockDamageInPlace}, which
+ * calls {@link #captureModel}. Fabric's model emitter renders onto this pass's identity
  * {@link RecyclingMatrixStack} rather than vanilla's camera-relative one, so the captured
  * quads are block-local and the crack projection runs in block space: one pooled mesh per
  * block shape and stage, and an instance root that is a translation by the block position.
  *
- * <p>Vanilla allocates a fresh {@code BlockPos} for every broken block every frame, and the
- * submitter's retained registry keys parts by owner identity, so each broken position is
+ * <p>Vanilla extracts a block position each frame, and the submitter's retained registry
+ * keys parts by owner identity, so each broken position is
  * lent one owner token for as long as it keeps being rendered. A position vanilla stops
  * rendering, because the block broke, the player let go, or it left the 32-block range,
  * loses its token at {@link #finishFrame}, and the submitter's {@code endFrame} retires
@@ -43,6 +56,14 @@ public final class RemixBlockDamagePass {
     private static final Logger LOGGER = LoggerFactory.getLogger(RemixBlockDamagePass.class);
 
     private static final String TYPE_KEY = "minecraft:block_breaking";
+    private static final CrumblingOverlay[] LOCAL_OVERLAYS = new CrumblingOverlay[10];
+    static {
+        PoseStack.Pose identity = new PoseStack().last();
+        for (int i = 0; i < LOCAL_OVERLAYS.length; i++) LOCAL_OVERLAYS[i] = new CrumblingOverlay(i, identity);
+    }
+
+    /** Block-entity capture has a block-local root, so its decal projection has the same root. */
+    public static CrumblingOverlay localOverlay(int stage) { return LOCAL_OVERLAYS[stage]; }
 
     /**
      * The crack is coplanar with the terrain face it is drawn on, which is the case
@@ -69,6 +90,43 @@ public final class RemixBlockDamagePass {
     private final PositionOwners owners = new PositionOwners();
     private final FailureLogThrottle failures = new FailureLogThrottle(LOGGER, "Block damage");
     private float[] reusableBoneData = new float[0];
+    private QuadEmitter emitter;
+    private VertexConsumer modelConsumer;
+    private PoseStack modelMatrices;
+    private final SingleThreadedRandomSource random = new SingleThreadedRandomSource(0);
+
+    /** Uses Fabric's model output for vanilla models and resource-pack/custom geometry alike. */
+    public void captureModel(BlockBreakingRenderState state, BlockStateModelSet models, RemixEntitySubmitter submitter) {
+        BlockStateModel model = models.get(state.blockState());
+        capture(state.blockPos(), state.progress(), (matrices, consumer) -> {
+            matrices.translate(state.blockState().getOffset(state.blockPos()));
+            modelMatrices = matrices;
+            modelConsumer = consumer;
+            random.setSeed(state.blockState().getSeed(state.blockPos()));
+            if (emitter == null) emitter = Renderer.get().quadEmitter(this::emitQuad);
+            emitter.clear();
+            try {
+                ((FabricBlockStateModel) model).emitQuads(emitter, BlockAndTintGetter.EMPTY,
+                        state.blockPos(), state.blockState(), random, face -> false);
+            } catch (RuntimeException | Error e) {
+                emitter = null;
+                throw e;
+            } finally {
+                modelConsumer = null;
+                modelMatrices = null;
+            }
+        }, submitter);
+    }
+
+    private void emitQuad(QuadView quad) {
+        PoseStack.Pose pose = modelMatrices.last();
+        var normal = quad.faceNormal();
+        for (int v = 0; v < 4; v++) {
+            modelConsumer.addVertex(pose, quad.x(v), quad.y(v), quad.z(v))
+                    .setColor(-1).setUv(quad.u(v), quad.v(v))
+                    .setNormal(pose, normal.x(), normal.y(), normal.z());
+        }
+    }
 
     /**
      * Renders one broken block's damage model through vanilla's renderer on the identity

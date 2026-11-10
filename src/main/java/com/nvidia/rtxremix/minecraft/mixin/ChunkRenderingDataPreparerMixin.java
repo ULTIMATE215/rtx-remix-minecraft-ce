@@ -1,10 +1,19 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.terrain.visibility.TimeSlicedWorkQueue;
+import com.nvidia.rtxremix.minecraft.terrain.visibility.VisibilityGraphAccess;
+import com.nvidia.rtxremix.minecraft.terrain.visibility.VisibilityGraphBuffers;
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.llamalad7.mixinextras.sugar.Local;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import com.google.common.collect.Queues;
@@ -15,12 +24,15 @@ import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.client.renderer.state.level.ChunkLoadingRenderState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.client.renderer.SectionOcclusionGraph;
+import net.minecraft.client.renderer.Octree;
 import net.minecraft.client.renderer.ViewArea;
 import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.client.renderer.culling.Frustum;
 import net.minecraft.util.Util;
 import net.minecraft.world.phys.Vec3;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Final;
+import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.Redirect;
@@ -31,20 +43,22 @@ import java.util.List;
 import java.util.Queue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
- * Profiling, a low-priority visibility executor, and a per-frame propagation budget around
- * vanilla's section visibility graph.
- *
- * <p>TODO(1.21.11): vanilla rewrote the walk around {@code Octree} and section-position longs.
- * The allocation-free port of the walk, its far-chunk probe, and the coarse frustum index that
- * replayed {@code ChunkSlotMoveLog} are disabled; vanilla's walk and octree frustum visit run
- * as is. {@code -Drtxremix.vanillaVisibilityWalk} and {@code -Drtxremix.logVisibleSet} have no
- * effect until the port is redone against the new walk.
+ * Runs full visibility walks on a low-priority worker, reuses their node and probe storage,
+ * and budgets partial propagation. The coarse index follows the same graph publication and
+ * replays moved slots before a frustum query. Vanilla's octree remains available to debug views.
  */
 @Mixin(SectionOcclusionGraph.class)
 public abstract class ChunkRenderingDataPreparerMixin {
+    @Shadow private ViewArea viewArea;
+    @Shadow @Final private AtomicReference<SectionOcclusionGraph.GraphState> currentGraph;
+
+    private static final boolean rtxremix$VANILLA_WALK = Boolean.getBoolean("rtxremix.vanillaVisibilityWalk");
+    private static final boolean rtxremix$LOG_VISIBLE_SET = Boolean.getBoolean("rtxremix.logVisibleSet");
+    private static volatile long rtxremix$lastVisibleSetSignature;
 
     private static final TracingExecutor rtxremix$visibilityExecutor =
             new TracingExecutor(Executors.newSingleThreadExecutor(task -> {
@@ -93,16 +107,28 @@ public abstract class ChunkRenderingDataPreparerMixin {
     private void rtxremix$storageReturn(ViewArea storage, CallbackInfo ci) {
         rtxremix$propagationQueue.clear();
         rtxremix$propagationSeeds = null;
+        if (storage == null) VisibilityGraphBuffers.clear();
         rtxremix$close(rtxremix$storageScope);
     }
 
-    @Inject(method = "addSectionsInFrustum", at = @At("HEAD"))
+    @Inject(method = "addSectionsInFrustum", at = @At("HEAD"), cancellable = true)
     private void rtxremix$frustumHead(
             Frustum frustum,
             List<SectionRenderDispatcher.RenderSection> builtChunks,
             List<SectionRenderDispatcher.RenderSection> nearbyChunks,
             CallbackInfo ci) {
         rtxremix$open(rtxremix$frustumScope, "ChunkVisibility.applyFrustum", rtxremix$sizeOf(builtChunks));
+        if (RtxRemixMod.isRtxEnabled() && !rtxremix$VANILLA_WALK) {
+            var index = ((VisibilityGraphAccess) currentGraph.get().storage()).rtxremix$buffers().index;
+            try {
+                index.apply(frustum, builtChunks, nearbyChunks);
+                rtxremix$scannedChunkCount(rtxremix$frustumScope, index.size());
+                rtxremix$captureCount(rtxremix$frustumScope, builtChunks.size());
+            } finally {
+                rtxremix$close(rtxremix$frustumScope);
+            }
+            ci.cancel();
+        }
     }
 
     @Inject(method = "addSectionsInFrustum", at = @At("RETURN"))
@@ -220,30 +246,48 @@ public abstract class ChunkRenderingDataPreparerMixin {
         rtxremix$close(rtxremix$seedScope);
     }
 
-    @Inject(method = "runUpdates", at = @At("HEAD"))
-    private void rtxremix$walkHead(
+    @WrapMethod(method = "runUpdates")
+    private void rtxremix$walk(
             SectionOcclusionGraph.GraphStorage renderableChunks,
             Vec3 cameraPos,
-            Queue<?> queue,
+            Queue<SectionOcclusionGraph.Node> queue,
             boolean smartCull,
             Consumer<SectionRenderDispatcher.RenderSection> onSectionAdded,
             LongOpenHashSet emptySections,
             LongOpenHashSet loadedChunks,
-            CallbackInfo ci) {
+            Operation<Void> original) {
         rtxremix$open(rtxremix$walkScope, "ChunkVisibility.walkVisibleGraph", rtxremix$sizeOf(queue));
+        var buffers = ((VisibilityGraphAccess) renderableChunks).rtxremix$buffers();
+        boolean port = RtxRemixMod.isRtxEnabled() && !rtxremix$VANILLA_WALK;
+        try {
+            if (port) {
+                buffers.walk.run(viewArea, renderableChunks, cameraPos, queue, smartCull,
+                        onSectionAdded, emptySections, loadedChunks);
+            } else {
+                original.call(renderableChunks, cameraPos, queue, smartCull, onSectionAdded, emptySections, loadedChunks);
+            }
+            if (rtxremix$LOG_VISIBLE_SET) {
+                long hash = buffers.index.positionHash();
+                long signature = hash ^ ((long) buffers.index.size() << 48);
+                if (signature != rtxremix$lastVisibleSetSignature) {
+                    rtxremix$lastVisibleSetSignature = signature;
+                    RtxRemixMod.LOGGER.info("Visible set ({} walk): {} sections, hash {}",
+                            port ? "port" : "vanilla", buffers.index.size(), Long.toHexString(hash));
+                }
+            }
+        } finally {
+            rtxremix$close(rtxremix$walkScope);
+        }
     }
 
-    @Inject(method = "runUpdates", at = @At("RETURN"))
-    private void rtxremix$walkReturn(
-            SectionOcclusionGraph.GraphStorage renderableChunks,
-            Vec3 cameraPos,
-            Queue<?> queue,
-            boolean smartCull,
-            Consumer<SectionRenderDispatcher.RenderSection> onSectionAdded,
-            LongOpenHashSet emptySections,
-            LongOpenHashSet loadedChunks,
-            CallbackInfo ci) {
-        rtxremix$close(rtxremix$walkScope);
+    @WrapOperation(method = "runUpdates", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/Octree;add(Lnet/minecraft/client/renderer/chunk/SectionRenderDispatcher$RenderSection;)Z"))
+    private boolean rtxremix$indexVanillaSection(Octree tree, SectionRenderDispatcher.RenderSection section,
+                                               Operation<Boolean> original,
+                                               @Local(argsOnly = true) SectionOcclusionGraph.GraphStorage storage) {
+        boolean added = original.call(tree, section);
+        if (added) ((VisibilityGraphAccess) storage).rtxremix$buffers().index.add(section);
+        return added;
     }
 
     private static int rtxremix$sizeOf(List<?> values) {

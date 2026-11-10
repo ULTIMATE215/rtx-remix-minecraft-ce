@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 name: build
 
@@ -18,10 +21,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - name: Read Java target
+        id: props
+        shell: pwsh
+        run: |
+          $java = Select-String -Path gradle.properties -Pattern '^release_java_version=(\d+)$'
+          if (-not $java) { throw 'gradle.properties has no release_java_version' }
+          "java=$($java.Matches[0].Groups[1].Value)" >> $env:GITHUB_OUTPUT
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
-          java-version: "21"
+          java-version: ${{ steps.props.outputs.java }}
       # The pinned runtime comes from public Packman; no credentials are used.
       - name: Build and test
         run: '& "$env:GITHUB_WORKSPACE\gradlew.bat" build test'

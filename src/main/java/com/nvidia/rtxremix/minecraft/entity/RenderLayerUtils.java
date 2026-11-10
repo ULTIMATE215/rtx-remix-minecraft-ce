@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.entity;
 
@@ -9,6 +12,7 @@ import com.mojang.blaze3d.pipeline.RenderPipeline;
 import com.mojang.blaze3d.pipeline.ColorTargetState;
 import com.mojang.blaze3d.pipeline.DepthStencilState;
 import com.mojang.blaze3d.platform.CompareOp;
+import com.mojang.blaze3d.vertex.DefaultVertexFormat;
 import com.nvidia.rtxremix.minecraft.mixin.RenderLayerSetupAccessor;
 import com.nvidia.rtxremix.minecraft.mixin.RenderSetupTextureSpecAccessor;
 import com.nvidia.rtxremix.minecraft.mixin.RenderSetupTexturesAccessor;
@@ -169,7 +173,8 @@ final class RenderLayerUtils {
         RenderPipeline pipeline = layer.pipeline();
         boolean beaconBeamProgram = pipeline == RenderPipelines.BEACON_BEAM_OPAQUE
                 || pipeline == RenderPipelines.BEACON_BEAM_TRANSLUCENT;
-        return classifyStreamedPerFrame(topology(layer).orElse(Topology.QUADS), beaconBeamProgram);
+        return pipeline.getVertexFormatBinding(0).equals(DefaultVertexFormat.PARTICLE)
+                || classifyStreamedPerFrame(topology(layer).orElse(Topology.QUADS), beaconBeamProgram);
     }
 
     static boolean classifyStreamedPerFrame(Topology topology, boolean beaconBeamProgram) {

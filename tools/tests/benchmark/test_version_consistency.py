@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 import json
 import re
@@ -8,6 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from rtx_tools import prism
 from rtx_tools.benchmark import util
 
 REPO_ROOT = util.PROJECT_DIR
@@ -151,6 +155,7 @@ class VersionConsistencyTests(unittest.TestCase):
         )
 
     def test_runtime_dependency_versions_match_gradle(self):
+        self.assertEqual(int(gradle_property("release_java_version")), prism.GAME_JAVA_MAJOR)
         expected = {
             "minecraft": gradle_dependency_version("com.mojang", "minecraft"),
             "fabric_loader": gradle_dependency_version("net.fabricmc", "fabric-loader"),
@@ -203,6 +208,7 @@ class VersionConsistencyTests(unittest.TestCase):
         self.assertEqual(minecraft_version, metadata["depends"]["minecraft"])
         self.assertEqual(f">={fabric_loader_version}", metadata["depends"]["fabricloader"])
         self.assertEqual(f">={fabric_api_version}", metadata["depends"]["fabric-api"])
+        self.assertEqual(f">={gradle_property('release_java_version')}", metadata["depends"]["java"])
         self.assertNotIn("fabric-api", metadata.get("suggests", {}))
 
         icon = metadata.get("icon")

@@ -1,11 +1,16 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.profiling.ParticleTickProfiler;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
+import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -27,7 +32,6 @@ public abstract class ParticleManagerMixin {
     @Shadow @Final private Map<ParticleRenderType, ParticleGroup<?>> particles;
 
     private static final ThreadLocal<ProfileScope> rtxremix$tickScope = new ThreadLocal<>();
-    private static final ThreadLocal<ProfileScope> rtxremix$sheetScope = new ThreadLocal<>();
 
     @Inject(method = "tick", at = @At("HEAD"), require = 0)
     private void rtxremix$tickHead(CallbackInfo ci) {
@@ -57,12 +61,17 @@ public abstract class ParticleManagerMixin {
             ProfileScope.plot("Java.ParticleManager.collisionSkips", stats.skippedCollisionChecks());
             ProfileScope.plot("Java.ParticleManager.collisionMs", stats.collisionNanos() / 1_000_000.0);
         }
-        rtxremix$closeScope(rtxremix$sheetScope);
         rtxremix$closeScope(rtxremix$tickScope);
     }
 
-    // TODO(1.21.11): per-sheet tick scopes are disabled; vanilla moved tickParticles
-    // into ParticleRenderer.tick, so only the whole-manager scope remains.
+    @WrapOperation(method = "lambda$tick$0", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/client/particle/ParticleGroup;tickParticles()V"))
+    private static void rtxremix$profileSheet(ParticleGroup<?> group, Operation<Void> original) {
+        try (ProfileScope scope = ProfileScope.beginJfrOnly("ParticleManager.tickParticles")
+                .captureCount(group.size()).plotOnClose("Java.ParticleManager.tickParticles.ms")) {
+            original.call(group);
+        }
+    }
 
     private static void rtxremix$openScope(ThreadLocal<ProfileScope> holder, ProfileScope scope) {
         rtxremix$closeScope(holder);

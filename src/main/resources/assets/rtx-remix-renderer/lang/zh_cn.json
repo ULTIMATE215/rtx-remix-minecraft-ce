@@ -169,7 +169,7 @@
   "rtxremix.setting.community.cloudTint": "云层明暗",
   "rtxremix.setting.community.cloudTint.tip": "雨天云变成风暴灰、夜晚变成暗蓝，不再一直是白色：夜里不再发光，雨里不再发棕。社区版功能。",
   "rtxremix.setting.community.realisticWater": "真实水体",
-  "rtxremix.setting.community.realisticWater.tip": "光在水中传得更远：浅水能看见水底，深处呈蓝绿色，并且每个生物群系有自己的水色——温暖海洋清澈碧蓝，沼泽浑浊。关闭恢复官方的深色水体。社区版功能。",
+  "rtxremix.setting.community.realisticWater.tip": "光在水中传得更远：浅水能看见水底，深处呈蓝绿色，并且每个生物群系有自己的水色：温暖海洋清澈碧蓝，沼泽浑浊。关闭恢复官方的深色水体。社区版功能。",
   "rtxremix.setting.community.animatedWater": "流动波浪",
   "rtxremix.setting.community.animatedWater.tip": "给水面叠加两层缓慢漂移的波浪，消除重复的波纹图案，下雨时水面更粗糙。社区版功能。",
   "rtxremix.setting.community.shoreFoam": "岸边浪花",

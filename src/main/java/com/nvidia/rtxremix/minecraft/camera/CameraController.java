@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.camera;
 
@@ -9,7 +12,6 @@ import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
-import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.util.Mth;
 import net.minecraft.world.level.storage.LevelResource;
@@ -81,6 +83,7 @@ public final class CameraController {
     private static final String RESERVED_SHOT_SET_NAME_SUFFIX = ".shots";
 
     private final LongSupplier nanoTimeSource;
+    private final CameraClockSync clockSync = new CameraClockSync();
 
     private State state = State.IDLE;
     private ManagedTarget managedTarget;
@@ -217,6 +220,7 @@ public final class CameraController {
      * Clears all camera state when leaving a world.
      */
     public void resetSession() {
+        clockSync.clear();
         state = State.IDLE;
         managedTarget = null;
         armedPathName = null;
@@ -1209,18 +1213,8 @@ public final class CameraController {
         }
     }
 
-    private static void applyTimeOfDay(Minecraft client, long timeOfDay) {
-        long normalized = normalizeTimeOfDay(timeOfDay);
-        // TODO(26.2): time of day is a WorldClock now and the client clock has no setter, so
-        // the client follows the server's clock sync instead of being set directly.
-
-        MinecraftServer server = client.getSingleplayerServer();
-        if (server != null) {
-            for (ServerLevel world : server.getAllLevels()) {
-                world.dimensionType().defaultClock().ifPresent(
-                        clock -> server.clockManager().setTotalTicks(clock, normalized));
-            }
-        }
+    private void applyTimeOfDay(Minecraft client, long timeOfDay) {
+        clockSync.apply(client, normalizeTimeOfDay(timeOfDay));
     }
 
     private static long normalizeTimeOfDay(long timeOfDay) {

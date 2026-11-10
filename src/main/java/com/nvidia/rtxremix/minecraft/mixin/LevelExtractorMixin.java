@@ -12,6 +12,13 @@ import com.nvidia.rtxremix.minecraft.terrain.NeighbourReflagFilter;
 import com.nvidia.rtxremix.minecraft.terrain.capture.BlockQuadEmitter;
 import com.nvidia.rtxremix.minecraft.terrain.capture.RegionBuilderRelease;
 import com.nvidia.rtxremix.minecraft.terrain.visibility.BuiltChunkStorageSectionAccess;
+import com.nvidia.rtxremix.minecraft.terrain.visibility.BuiltChunkArrayIterator;
+import com.nvidia.rtxremix.minecraft.terrain.ChunkBuilderBlockEntityAccess;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
+import it.unimi.dsi.fastutil.objects.ObjectListIterator;
+import net.minecraft.client.multiplayer.ClientLevel;
+import net.minecraft.client.renderer.chunk.SectionRenderDispatcher.RenderSection;
+import java.util.Arrays;
 import net.minecraft.client.SectionUpdateTracker;
 import net.minecraft.client.renderer.LevelRenderer;
 import net.minecraft.client.renderer.ViewArea;
@@ -24,6 +31,7 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
@@ -47,6 +55,42 @@ public abstract class LevelExtractorMixin implements LevelExtractorAccess {
 
     @Nullable
     private RenderRegionCache rtxremix$frameRegionCache;
+    private RenderSection[] rtxremix$blockEntitySections = new RenderSection[256];
+    private final BuiltChunkArrayIterator rtxremix$blockEntityIterator = new BuiltChunkArrayIterator();
+    private int rtxremix$blockEntitySectionCount;
+    private int rtxremix$blockEntitySectionScans;
+
+    @Redirect(method = "extractVisibleBlockEntities", at = @At(value = "INVOKE",
+            target = "Lit/unimi/dsi/fastutil/objects/ObjectArrayList;iterator()Lit/unimi/dsi/fastutil/objects/ObjectListIterator;"))
+    private ObjectListIterator<RenderSection> rtxremix$blockEntitySections(ObjectArrayList<RenderSection> visible) {
+        rtxremix$blockEntitySectionScans = visible.size();
+        if (!RtxRemixMod.isRtxEnabled()) return visible.iterator();
+        int count = 0;
+        for (int i = 0; i < visible.size(); i++) {
+            RenderSection section = visible.get(i);
+            if (((ChunkBuilderBlockEntityAccess) section).rtxremix$hasBlockEntities()) {
+                if (count == rtxremix$blockEntitySections.length) {
+                    rtxremix$blockEntitySections = Arrays.copyOf(rtxremix$blockEntitySections, count * 2);
+                }
+                rtxremix$blockEntitySections[count++] = section;
+            }
+        }
+        Arrays.fill(rtxremix$blockEntitySections, count, Math.max(count, rtxremix$blockEntitySectionCount), null);
+        rtxremix$blockEntitySectionCount = count;
+        return rtxremix$blockEntityIterator.reset(rtxremix$blockEntitySections, count);
+    }
+
+    @Inject(method = "setLevel", at = @At("HEAD"))
+    private void rtxremix$releaseWorld(ClientLevel level, CallbackInfo ci) {
+        Arrays.fill(rtxremix$blockEntitySections, null);
+        rtxremix$blockEntitySectionCount = 0;
+        rtxremix$blockEntitySectionScans = 0;
+        RenderRegionCache cache = rtxremix$takeFrameRegionCache();
+        if (cache != null) ((RegionBuilderRelease) cache).rtxremix$releaseSnapshots();
+    }
+
+    @Override public int rtxremix$blockEntitySectionScans() { return rtxremix$blockEntitySectionScans; }
+    @Override public int rtxremix$blockEntitySectionCount() { return rtxremix$blockEntitySectionCount; }
 
     /**
      * Hidden water-top culling reads farther than vanilla's one-block rebuild
@@ -87,8 +131,6 @@ public abstract class LevelExtractorMixin implements LevelExtractorAccess {
         if (!RtxRemixMod.isRtxEnabled() || !NeighbourReflagFilter.ENABLED || viewArea == null) {
             return;
         }
-        // TODO(26.2): flagLoadedSection still marks the ViewArea section; 26.2 keeps the dirty
-        // flag in LevelExtractor's SectionUpdateTracker, so the terrain side must write there.
         ((BuiltChunkStorageSectionAccess) viewArea).rtxremix$flagLoadedSection(cx, sy, cz);
         ci.cancel();
     }
@@ -118,6 +160,13 @@ public abstract class LevelExtractorMixin implements LevelExtractorAccess {
         if (state != null) {
             state.setNotDirty();
         }
+    }
+
+    @Override
+    public boolean rtxremix$isSectionDirty(long sectionNode) {
+        if (sectionUpdateTracker == null) return false;
+        SectionUpdateTracker.SectionDirtyState state = sectionUpdateTracker.getDirtyState(sectionNode);
+        return state != null && state.isDirty();
     }
 
     @Override

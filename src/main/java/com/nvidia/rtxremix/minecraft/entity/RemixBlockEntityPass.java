@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.entity;
 
@@ -102,8 +105,7 @@ public final class RemixBlockEntityPass {
                         EntityRenderDispatcher dispatcher, RemixEntitySubmitter submitter) {
         long captureStart = System.nanoTime();
         EntityRenderContext ctx = EntityRenderContext.get();
-        // TODO(1.21.11): blob shadows of display entities (spawner) are no longer
-        // suppressed here; the dispatcher's renderShadows flag is gone.
+        // The command capture drops blob shadows, including nested spawner entities.
         provider.beginEntity();
         matrices.pushPose();
         ctx.begin(true);
@@ -187,5 +189,13 @@ public final class RemixBlockEntityPass {
     private String typeKey(BlockEntity be) {
         return typeKeyCache.computeIfAbsent(be.getType(),
                 type -> BuiltInRegistries.BLOCK_ENTITY_TYPE.getKey(type).toString());
+    }
+
+    /** Drops commands and model references when the world or resource set changes. */
+    public void clear() {
+        commandCapture.close();
+        provider.clear();
+        frameCount = frameParts = frameMeshCreates = 0;
+        frameCaptureNanos = frameSubmitNanos = 0L;
     }
 }

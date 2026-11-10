@@ -15,6 +15,17 @@ import com.nvidia.rtxremix.minecraft.texture.BlockTextureManager;
 import com.nvidia.rtxremix.minecraft.light.LightEntry;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
 import net.minecraft.client.Minecraft;
+import net.fabricmc.fabric.api.client.renderer.v1.Renderer;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadEmitter;
+import net.fabricmc.fabric.api.client.renderer.v1.mesh.QuadView;
+import net.fabricmc.fabric.api.client.renderer.v1.model.FabricBlockStateModel;
+import net.fabricmc.fabric.api.client.renderer.v1.sprite.FabricTextureAtlas;
+import net.fabricmc.fabric.api.client.renderer.v1.sprite.SpriteFinder;
+import net.fabricmc.fabric.api.client.render.fluid.v1.FluidRenderHandler;
+import net.fabricmc.fabric.api.client.render.fluid.v1.FluidRendering;
+import net.fabricmc.fabric.api.client.render.fluid.v1.FluidRenderingRegistry;
+import net.minecraft.client.renderer.block.FluidRenderer;
+import net.minecraft.client.renderer.texture.TextureAtlas;
 import net.minecraft.client.color.block.BlockColors;
 import net.minecraft.client.color.block.BlockTintSource;
 import net.minecraft.client.renderer.block.BlockAndTintGetter;
@@ -22,7 +33,6 @@ import net.minecraft.client.renderer.block.BlockStateModelSet;
 import net.minecraft.client.renderer.block.FluidModel;
 import net.minecraft.client.renderer.block.FluidStateModelSet;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
-import net.minecraft.client.renderer.block.dispatch.BlockStateModelPart;
 import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
 import net.minecraft.client.renderer.texture.TextureAtlasSprite;
@@ -45,7 +55,7 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.function.Supplier;
+import java.util.function.Predicate;
 
 /**
  * Per-block mesh emission for RTX Remix, designed to be driven from
@@ -79,7 +89,23 @@ public final class BlockQuadEmitter {
     private static final ThreadLocal<Boolean> threadNamed =
             ThreadLocal.withInitial(() -> Boolean.FALSE);
 
-    private final List<BlockStateModelPart> partsScratch = new ArrayList<>();
+    private QuadEmitter modelEmitter;
+    private SpriteFinder blockSprites;
+    private BlockAndTintGetter captureWorld;
+    private BlockState captureState;
+    private String captureLayer;
+    private float captureX, captureY, captureZ;
+    private int cullKnown, culledFaces;
+    private final Predicate<Direction> cullTest = this::isBlockFaceCulled;
+    private final FluidQuadCapture fluidCapture = new FluidQuadCapture(this::emitCustomFluidQuad);
+    private final FluidRendering.DefaultRenderer defaultFluidRenderer = new FluidRendering.DefaultRenderer() {
+        @Override
+        public void render(FluidRenderer renderer, FluidRenderHandler handler, BlockAndTintGetter world,
+                           BlockPos pos, FluidRenderer.Output output, BlockState block, FluidState fluid) {
+            emitFluidQuads(world, fluid, SectionPos.sectionRelative(pos.getX()),
+                    SectionPos.sectionRelative(pos.getY()), SectionPos.sectionRelative(pos.getZ()));
+        }
+    };
     private final SingleThreadedRandomSource random = new SingleThreadedRandomSource(42);
     private final BlockPos.MutableBlockPos mutablePos = new BlockPos.MutableBlockPos();
     private final BlockPos.MutableBlockPos neighborPos = new BlockPos.MutableBlockPos();
@@ -212,6 +238,8 @@ public final class BlockQuadEmitter {
         Minecraft client = Minecraft.getInstance();
         this.blockColors = (client != null) ? client.getBlockColors() : null;
         this.fluidModelSet = (client != null) ? client.getModelManager().getFluidStateModelSet() : null;
+        this.blockSprites = client == null ? null : ((FabricTextureAtlas) client.getTextureManager()
+                .getTexture(TextureAtlas.LOCATION_BLOCKS)).spriteFinder();
 
         writer.beginSection(baseX, baseY, baseZ);
         lights.clear();
@@ -313,8 +341,8 @@ public final class BlockQuadEmitter {
     /**
      * Emits block model quads for the current block. Called from the
      * isOpaqueFullCube redirect for blocks vanilla would hand to renderBlock,
-     * a call the build then skips by reporting the block invisible. Bypasses
-     * FRAPI/Indigo and writes directly to the DirectQuadWriter.
+     * a call the build then skips by reporting the block invisible. Fabric's
+     * streaming quad emitter supplies both vanilla and custom model geometry.
      */
     public void emitBlock(BlockState state, BlockPos pos, BlockAndTintGetter world) {
         blockCount++;
@@ -358,23 +386,53 @@ public final class BlockQuadEmitter {
         // overrides it for the whole block.
         String layerName = isClearGlass(state) ? "glass" : null;
 
-        // TODO(1.21.11): FabricBakedModel.isVanillaAdapter and RenderContext are gone. Every
-        // model is captured through its vanilla parts; a FRAPI model that only overrides
-        // emitQuads (connected textures, for example) is captured without its custom quads.
-        emitVanillaBlock(world, state, model, layerName, lx, ly, lz);
+        captureWorld = world;
+        captureState = state;
+        captureLayer = layerName;
+        captureX = lx;
+        captureY = ly;
+        captureZ = lz;
+        cullKnown = culledFaces = 0;
+        if (modelEmitter == null) modelEmitter = Renderer.get().quadEmitter(this::stageModelQuad);
+        modelEmitter.clear();
+        random.setSeed(modelRandomSeed);
+        try {
+            ((FabricBlockStateModel) model).emitQuads(modelEmitter, world, pos, state, random, cullTest);
+            flushBlock(world);
+        } catch (RuntimeException | Error e) {
+            // A failed model may leave transforms pushed on the emitter.
+            modelEmitter = null;
+            throw e;
+        } finally {
+            captureWorld = null;
+            captureState = null;
+        }
     }
 
     /**
      * Emits fluid quads for the current block. Called from the
      * renderFluid redirect.
      */
-    public void emitFluid(BlockPos pos, BlockAndTintGetter world, FluidState fluidState) {
+    public void emitFluid(FluidRenderer renderer, BlockPos pos, BlockAndTintGetter world,
+                          BlockState blockState, FluidState fluidState) {
         fluidCount++;
         int lx = SectionPos.sectionRelative(pos.getX());
         int ly = SectionPos.sectionRelative(pos.getY());
         int lz = SectionPos.sectionRelative(pos.getZ());
         cacheLocalFluidState(localIndex(lx, ly, lz), fluidState);
-        emitFluidQuads(world, fluidState, lx, ly, lz);
+        FluidRenderHandler override = FluidRenderingRegistry.getOverride(fluidState.getType());
+        if (override == null) {
+            emitFluidQuads(world, fluidState, lx, ly, lz);
+        } else {
+            fluidCapture.reset();
+            try {
+                FluidRendering.render(renderer, override, world, pos, fluidCapture, blockState, fluidState,
+                        defaultFluidRenderer);
+                fluidCapture.flush();
+            } finally {
+                fluidCapture.reset();
+            }
+        }
     }
 
     /**
@@ -396,83 +454,62 @@ public final class BlockQuadEmitter {
         }
     }
 
-    private void emitVanillaBlock(BlockAndTintGetter world, BlockState state,
-                                   BlockStateModel model, String layerName,
-                                   float lx, float ly, float lz) {
-
-        random.setSeed(modelRandomSeed);
-        partsScratch.clear();
-        model.collectParts(random, partsScratch);
-        for (Direction dir : ALL_DIRECTIONS) {
-            if (dir != null && !shouldDrawBlockSide(world, state, dir)) {
-                continue;
-            }
-
-            for (int p = 0; p < partsScratch.size(); p++) {
-                List<BakedQuad> bakedQuads = partsScratch.get(p).getQuads(dir);
-                for (int q = 0; q < bakedQuads.size(); q++) {
-                    stageBakedQuad(bakedQuads.get(q), layerName, state, world, lx, ly, lz);
-                }
-            }
+    private boolean isBlockFaceCulled(Direction face) {
+        if (face == null) return false;
+        int bit = 1 << face.ordinal();
+        if ((cullKnown & bit) == 0) {
+            cullKnown |= bit;
+            if (!shouldDrawBlockSide(captureWorld, captureState, face)) culledFaces |= bit;
         }
-        partsScratch.clear();
-
-        flushBlock(world);
+        return (culledFaces & bit) != 0;
     }
 
-    private void stageBakedQuad(BakedQuad bq, String layerName,
-                                 BlockState state, BlockAndTintGetter world,
-                                 float lx, float ly, float lz) {
+    /** The same streaming emitter receives vanilla parts and Fabric's custom geometry. */
+    private void stageModelQuad(QuadView quad) {
+        if (isBlockFaceCulled(quad.cullFace())) return;
         for (int v = 0; v < 4; v++) {
-            org.joml.Vector3fc position = bq.position(v);
-            long uv = bq.packedUV(v);
-            tempPositions[v * 3]     = position.x() + lx;
-            tempPositions[v * 3 + 1] = position.y() + ly;
-            tempPositions[v * 3 + 2] = position.z() + lz;
-            tempUvs[v * 2]     = net.minecraft.client.model.geom.builders.UVPair.unpackU(uv);
-            tempUvs[v * 2 + 1] = net.minecraft.client.model.geom.builders.UVPair.unpackV(uv);
+            tempPositions[v * 3] = quad.x(v) + captureX;
+            tempPositions[v * 3 + 1] = quad.y(v) + captureY;
+            tempPositions[v * 3 + 2] = quad.z(v) + captureZ;
+            tempUvs[v * 2] = quad.u(v);
+            tempUvs[v * 2 + 1] = quad.v(v);
         }
-
-        // 1.21.11 baked quads carry no per-vertex normal; the geometric normal below is what
-        // the old path fell back to for vanilla's unwritten normal, with the face as backstop.
-        float nx = 0, ny = 0, nz = 0;
-        {
-            float e1x = tempPositions[3] - tempPositions[0], e1y = tempPositions[4] - tempPositions[1], e1z = tempPositions[5] - tempPositions[2];
-            float e2x = tempPositions[6] - tempPositions[0], e2y = tempPositions[7] - tempPositions[1], e2z = tempPositions[8] - tempPositions[2];
-            nx = e1y * e2z - e1z * e2y;
-            ny = e1z * e2x - e1x * e2z;
-            nz = e1x * e2y - e1y * e2x;
-            float len = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
-            if (len > 0.001f) {
-                nx /= len; ny /= len; nz /= len;
-            } else if (bq.direction() != null) {
-                nx = bq.direction().getStepX(); ny = bq.direction().getStepY(); nz = bq.direction().getStepZ();
-            }
+        org.joml.Vector3fc normal = quad.faceNormal();
+        int color = quad.color(0);
+        if (quad.tintIndex() >= 0 && blockColors != null) {
+            int tint = getBlockTint(captureState, captureWorld, quad.tintIndex());
+            color = net.minecraft.util.ARGB.multiply(color, 0xFF000000 | tint);
         }
-
-        int color = 0xFFFFFFFF;
-        if (bq.materialInfo().tintIndex() >= 0 && blockColors != null) {
-            int tint = getBlockTint(state, world, bq.materialInfo().tintIndex());
-            int r = (tint >> 16) & 0xFF, g = (tint >> 8) & 0xFF, b = tint & 0xFF;
-            color = 0xFF000000 | (r << 16) | (g << 8) | b;
-        }
-
-        if (layerName == null) {
-            layerName = layerName(bq.materialInfo().layer());
-        }
-        TextureAtlasSprite sprite = bq.materialInfo().sprite();
-        Identifier spriteId = sprite != null ? sprite.contents().name() : null;
+        String layer = captureLayer != null ? captureLayer : layerName(quad.chunkLayer());
+        TextureAtlasSprite sprite = blockSprites.find(quad);
+        Identifier spriteId = sprite.contents().name();
         if (isWaterSprite(spriteId)) {
-            emitBlockWaterQuad(nx, ny, nz, color, layerName);
-            return;
+            emitBlockWaterQuad(normal.x(), normal.y(), normal.z(), color, layer);
+        } else {
+            writer.stageQuad(tempPositions, tempUvs, normal.x(), normal.y(), normal.z(), color,
+                    spriteId, sprite.getU0(), sprite.getV0(), sprite.getU1(), sprite.getV1(), layer);
         }
-        float su0 = sprite != null ? sprite.getU0() : 0;
-        float sv0 = sprite != null ? sprite.getV0() : 0;
-        float su1 = sprite != null ? sprite.getU1() : 1;
-        float sv1 = sprite != null ? sprite.getV1() : 1;
+    }
 
-        writer.stageQuad(tempPositions, tempUvs, nx, ny, nz, color,
-                spriteId, su0, sv0, su1, sv1, layerName);
+    private void emitCustomFluidQuad(ChunkSectionLayer layer, float[] positions, float[] uvs, int color) {
+        System.arraycopy(positions, 0, tempPositions, 0, 12);
+        System.arraycopy(uvs, 0, tempUvs, 0, 8);
+        float ax = positions[3] - positions[0], ay = positions[4] - positions[1], az = positions[5] - positions[2];
+        float bx = positions[6] - positions[0], by = positions[7] - positions[1], bz = positions[8] - positions[2];
+        float nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+        float length = (float) Math.sqrt(nx * nx + ny * ny + nz * nz);
+        if (length == 0) return;
+        nx /= length;
+        ny /= length;
+        nz /= length;
+        TextureAtlasSprite sprite = blockSprites.find((uvs[0] + uvs[2] + uvs[4] + uvs[6]) * 0.25f,
+                (uvs[1] + uvs[3] + uvs[5] + uvs[7]) * 0.25f);
+        if (isWaterSprite(sprite.contents().name())) {
+            emitBlockWaterQuad(nx, ny, nz, color, layerName(layer));
+        } else {
+            writer.writeFluidQuad(positions, uvs, nx, ny, nz, color, sprite.contents().name(),
+                    sprite.getU0(), sprite.getV0(), sprite.getU1(), sprite.getV1(), layerName(layer), texManager);
+        }
     }
 
     private static final Identifier WATER_STILL_SPRITE = Identifier.withDefaultNamespace("block/water_still");
@@ -585,8 +622,6 @@ public final class BlockQuadEmitter {
 
     private void emitFluidQuads(BlockAndTintGetter world, FluidState fluidState,
                                  int lx, int ly, int lz) {
-        // TODO(26.2): Fabric's FluidRenderHandler no longer exposes sprites or colours; the
-        // vanilla FluidStateModelSet supplies both, so a modded fluid renderer override is ignored.
         if (fluidModelSet == null) return;
         FluidModel handler = fluidModelSet.get(fluidState);
         if (handler == null) return;
@@ -1070,26 +1105,7 @@ public final class BlockQuadEmitter {
         // translucent material with the frame as a diffuse layer.
         // Stained glass is already translucent and keeps vanilla's layer.
         if (isClearGlass(state)) return "glass";
-        // TODO(1.21.11): vanilla folded CUTOUT_MIPPED into CUTOUT, so "cutout_mipped" is no
-        // longer distinguished here.
-        // 26.2: layers moved onto the quads; the block's layer is the most transparent
-        // layer any of its default-variant quads uses.
-        Minecraft client = Minecraft.getInstance();
-        if (client == null) return "solid";
-        BlockStateModel model = client.getModelManager().getBlockStateModelSet().get(state);
-        if (model.hasMaterialFlag(BakedQuad.FLAG_TRANSLUCENT)) return "translucent";
-        List<BlockStateModelPart> parts = new ArrayList<>();
-        model.collectParts(new SingleThreadedRandomSource(42L), parts);
-        for (BlockStateModelPart part : parts) {
-            for (Direction dir : ALL_DIRECTIONS) {
-                for (BakedQuad quad : part.getQuads(dir)) {
-                    ChunkSectionLayer layer = quad.materialInfo().layer();
-                    if (layer == ChunkSectionLayer.TRANSLUCENT) return "translucent";
-                    if (layer == ChunkSectionLayer.CUTOUT) return "cutout";
-                }
-            }
-        }
-        return "solid";
+        return BlockLayerClassifier.classify(state);
     }
 
     private static void setPos4(float[] out,

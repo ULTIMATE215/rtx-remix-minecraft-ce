@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.terrain.visibility;
 
@@ -13,6 +16,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
+import org.joml.Vector3d;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -21,12 +25,12 @@ class FarChunkProbeTest {
 
     /** {@code ceil(sqrt(3) * 16)}, vanilla's step. */
     private static final double STEP = Math.ceil(Math.sqrt(3.0) * 16.0);
-    /** The overworld's range as the mixin passes it: getBottomY() and getTopY(), the latter one past the top block. */
+    /** The overworld's block range, with an exclusive upper bound. */
     private static final int WORLD_BOTTOM = -64;
     private static final int WORLD_TOP = 320;
 
     /**
-     * Vanilla's probe, transcribed with its Vec3d chain intact. The port must probe the same
+     * Vanilla's probe, transcribed with its JOML chain intact. The port must probe the same
      * block positions in the same order and reach the same verdict.
      */
     private enum Verdict { REACHED, BLOCKED, LEFT_WORLD }
@@ -44,10 +48,11 @@ class FarChunkProbeTest {
                 direction.getAxis() == Direction.Axis.Z
                         ? (cameraSectionCenter.getZ() > origin.getZ() ? 16 : 0)
                         : (cameraSectionCenter.getZ() < origin.getZ() ? 16 : 0));
-        Vec3 point = new Vec3(corner.getX(), corner.getY(), corner.getZ());
-        Vec3 step = cameraPos.subtract(point).normalize().scale(STEP);
-        while (cameraPos.subtract(point).lengthSqr() > 3600.0) {
-            point = point.add(step);
+        Vector3d point = new Vector3d(corner.getX(), corner.getY(), corner.getZ());
+        Vector3d camera = new Vector3d(cameraPos.x, cameraPos.y, cameraPos.z);
+        Vector3d step = new Vector3d(camera).sub(point).normalize().mul(STEP);
+        while (point.distanceSquared(camera) > 3600.0) {
+            point.add(step);
             if (point.y > worldTop || point.y < worldBottom) {
                 return Verdict.LEFT_WORLD;
             }
@@ -89,6 +94,7 @@ class FarChunkProbeTest {
 
     private static void probesTheSamePositionsAndVerdictAsVanilla(int worldTop, int worldBottom, long seed) {
         Random random = new Random(seed);
+        FarChunkProbe probe = new FarChunkProbe();
         int passes = 0;
         int leftTheWorld = 0;
         for (int trial = 0; trial < 20_000; trial++) {
@@ -117,7 +123,7 @@ class FarChunkProbeTest {
             boolean expected = verdict != Verdict.BLOCKED;
 
             RecordingGraph portedGraph = new RecordingGraph(salt);
-            boolean actual = FarChunkProbe.reachesCamera(
+            boolean actual = probe.reachesCamera(
                     origin.getX(), origin.getY(), origin.getZ(),
                     direction.getAxis(),
                     cameraSectionCenter.getX(), cameraSectionCenter.getY(), cameraSectionCenter.getZ(),
@@ -142,7 +148,7 @@ class FarChunkProbeTest {
     @Test
     void cornerCoincidingWithCameraPassesWithoutProbing() {
         RecordingGraph graph = new RecordingGraph(1L);
-        boolean reaches = FarChunkProbe.reachesCamera(
+        boolean reaches = new FarChunkProbe().reachesCamera(
                 0, 0, 0, Direction.Axis.X,
                 8, 8, 8,
                 16.0, 0.0, 0.0,

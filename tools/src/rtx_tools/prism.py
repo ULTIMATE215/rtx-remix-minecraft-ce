@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 """Prism Launcher discovery, account selection, and the per-checkout data folder the tools launch Minecraft through.
 
@@ -37,10 +40,9 @@ HEAP_SIZE = re.compile(r"(\d+)([kKmMgGtT]?)")
 HEAP_UNIT_BYTES = {"": 1, "k": 1 << 10, "m": 1 << 20, "g": 1 << 30, "t": 1 << 40}
 # Prism's default MinMemAlloc (Application::Application in launcher/Application.cpp).
 PRISM_MIN_HEAP_MIB = 512
-# The only Java major Prism's metadata lists for Minecraft 1.21.1 (compatibleJavaMajors in
-# https://meta.prismlauncher.org/v1/net.minecraft/1.21.1.json). Prism refuses any other, newer ones included, unless
-# IgnoreJavaCompatibility is set (VerifyJavaInstall::executeTask in launcher/minecraft/launch/VerifyJavaInstall.cpp).
-GAME_JAVA_MAJOR = 21
+# Keep the game JVM aligned with release_java_version in gradle.properties.
+# Prism verifies Java compatibility before launching; the native bridge also needs a matching architecture.
+GAME_JAVA_MAJOR = 25
 PE_MACHINE_ARCH = {0x8664: "win64", 0xAA64: "arm64"}
 JAVA_VERSION_LINE = re.compile(r'^JAVA_VERSION="(\d+(?:\.\d+)*)', re.MULTILINE)
 
@@ -329,10 +331,10 @@ def find_game_jdk(arch: str, java_home: Path | None) -> Path | None:
     return None
 
 
-def installer_constant(name: str) -> str:
+def installer_constant(name: str, *, project_dir: Path | None = None) -> str:
     """A `$script:NAME = '...'` string from packaging/installer.ps1, the one source of the pinned versions and the
     recommended JVM arguments."""
-    path = util.PROJECT_DIR / "packaging" / "installer.ps1"
+    path = (project_dir or util.PROJECT_DIR) / "packaging" / "installer.ps1"
     pattern = rf"^[ \t]*\$script:{re.escape(name)}[ \t]*=[ \t]*'((?:[^']|'')*)'"
     match = re.search(pattern, path.read_text(encoding="utf-8"), re.MULTILINE)
     if match is None:

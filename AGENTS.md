@@ -1,10 +1,17 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
+SPDX-License-Identifier: Apache-2.0
+
+Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
+-->
+
 # AGENTS.md: rtx-remix-minecraft
 
 Context for AI coding agents working in this repository.
 
 ## Project Overview
 
-`rtx-remix-minecraft` is a Fabric mod that renders Minecraft 1.21.1 through
+`rtx-remix-minecraft` is a Fabric mod that renders Minecraft 26.2 through
 NVIDIA RTX Remix. It captures terrain, entities, particles, sky, and clouds from
 the client and submits them to the Remix runtime as a path-traced scene. The
 Java facade and JNI bridge are tracked under `rtxremix-java/`; the native
@@ -27,7 +34,7 @@ subdirectory may carry its own `AGENTS.md`; read the nearest one as well.
 
 ## Build, Run, Package, Test
 
-Java 21, Windows, and the C++ toolchain are required. Gradle fetches a missing
+Java 25, Windows, and the C++ toolchain are required. Gradle fetches a missing
 Remix runtime automatically. [Getting Started](docs/GETTING_STARTED.md) covers local overrides.
 
 ```powershell
@@ -164,13 +171,13 @@ height (`SeededSurfaceScan`, `SkyLightSurfaceScanPolicy`). `VanillaSectionBuilds
 keeps real copies until every build that latched capture off has finished.
 Each policy has a `rtxremix.*` kill switch listed in `docs/TUNING.md`.
 
-**Allocation.** The collector's concurrent work is what stretches frames at
-high render distance, so the hot vanilla paths that run per section or per
-frame are ported allocation-free and kept that way: the chunk visibility walk
-and its far-section probe (`ChunkRenderingDataPreparerMixin`,
-`terrain/visibility/`), block model variant and part selection
-(`WeightedBakedModelMixin`, `MultipartBakedModelMixin`), biome colour blending,
-and the integrated server's per-tick chunk list. Retained section meshes live
+**Allocation.** Hot paths reuse storage for the visibility graph's nodes and
+queues, its far-section probe (`ChunkRenderingDataPreparerMixin`,
+`terrain/visibility/`), multi-part model selection (`MultipartBakedModelMixin`)
+and biome colour blending. The 26.2 vanilla Octree still allocates nodes; do not
+describe the whole visibility rebuild as allocation-free. Vanilla now handles
+weighted model selection and reuses the integrated server's spawning chunk list,
+so the corresponding 1.21.1 ports are not used here. Retained section meshes live
 in C-allocated direct buffers outside the JDK's direct-memory budget
 (`SectionMeshData`, `DirectBufferPool`) and render-region snapshots in pooled
 heap arrays (`RenderRegionStoragePool`), both under explicit reference counts:
@@ -199,12 +206,16 @@ finishes GL before replacing an import, and its client-done value advances only
 past an accepted signal.
 
 **Particles.** Slot preparation and CPU mesh snapshots run on a dedicated worker
-and are double buffered: the render thread publishes the previous frame's
-payload at the top of the frame and joins the worker after submit, so particles
-trail the scene by exactly one frame. Vanilla particle colours are lightmap
-tints, not albedos, and the runtime lights a blended particle from the radiance
-cache with no self-shadowing, so `ParticleTint` draws soot near-black to keep
-smoke dark over a lit floor.
+that starts with the frame and overlaps the camera, light, terrain, entity, and
+sky work; the render thread joins it just before Submit and publishes the payload
+in the same frame, because particles carry no motion vectors and a frame of lag
+shows as smoke swimming against the camera.
+`-Drtxremix.particles.previousFrame=true` restores the old double buffering,
+which publishes the previous frame's payload at the top of the frame and joins
+after Submit, so particles trail the scene by exactly one frame. Vanilla
+particle colours are lightmap tints, not albedos, and the runtime lights a
+blended particle from the radiance cache with no self-shadowing, so
+`ParticleTint` draws soot near-black to keep smoke dark over a lit floor.
 
 **Entities.** Entities and block entities that vanilla already draws are
 captured in place, so a model is evaluated once rather than once for OpenGL and
@@ -396,7 +407,7 @@ The wrapper's source of truth, in order, is:
 The root Gradle build compiles the Java sources directly and builds
 `remixbridge.dll` into `build/native/{win64|arm64}/`. There is no separate
 wrapper Java build or example launcher. The native build needs Visual Studio
-C++ tools and `JAVA_HOME` pointing to a 64-bit JDK 21. It uses the
+C++ tools and `JAVA_HOME` pointing to a 64-bit JDK 25. It uses the
 copied header unless `REMIX_INCLUDE` explicitly selects another directory.
 The supported targets are Windows x64 and ARM64; agent shells may be POSIX
 even though the Gradle wrapper and native compiler entry points are batch scripts.

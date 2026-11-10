@@ -24,10 +24,12 @@ RTX Remix for Minecraft 社区版是 NVIDIA 开源项目
 | 草地、泥土油亮 | 官方把 LabPBR 光滑度换算成 `(1-s)²`，而 Remix 读取的是感知粗糙度并会再平方一次。改为规范的 `1-s` | 材质 → 精确粗糙度（默认开） | `texture/LabPBRConverter.java` |
 | 雨天没氛围、像晴天 | 雨/雷暴 conf：更浓的散射雾和飘动的非均匀雨幕，曝光不再把阴天提亮；阴天天空减光，雨中白天加入柔和环境光 | 社区版 → 阴天天气 | `confs/weather/*.conf`、`community/OvercastSky.java`、`sky/SkyRenderer.java` |
 | 地面不湿 | 露天朝上的方块面在雨中按 LabPBR 孔隙度变暗并泛水光，雨停后约 90 秒变干；有遮挡处保持干燥 | 社区版 → 湿润地面 | `community/WetSurfaces.java`、`texture/WetAtlas.java`、地形捕获 |
+| 雨天地面没有积水 | 雨越下越久，露天的土路、石头、木板等硬质地面上汇出镜面般的水坑（世界坐标贴花，按湿度逐级扩大），地面变干时慢慢缩小；草地、沙子、雪、苔藓、树叶、耕地不积水 | 社区版 → 积水坑 | `community/Puddles.java`、`texture/PuddleMask.java`、地形捕获 |
+| 雨滴落地没有涟漪 | 下雨时露天地面的薄水膜上有动画的雨滴涟漪圈（法线贴图序列帧，随雨出现、雨停消失）；开启时隐藏原版的雨滴溅射粒子 | 社区版 → 雨滴涟漪 | `community/RainRipples.java`、地形捕获 |
 | （新功能）体积云 | 写实尺度的体积云（云底约 y=400）：晴天是铺到地平线、底平顶亮的积云，7 km 高空有成片、纤细的丝状卷云，闪电从云里把雷暴云照亮，雷暴时长出 1500 格高、带砧状云顶的积雨云塔，下雨转为阴天。所有云都在天空穹顶里按体积光线步进，与大气共用同一个太阳、月亮和透射 LUT，并按空气透视融进地平线；相机周围几百格内另用同一个云场生成看不见的网格，只负责真实阴影和光柱；远处云挡住太阳时整片地面变暗，星星、银河、流星被云遮住。默认开启；之前手动选过「程序化」云的存档保持原样 | 云 → 体积云 / 体积云精度 / 云量 | `community/clouds/*`、`cloud/VolumetricCloudTiles.java`、`shaders/cloud_sky.comp` |
 | 雨天云发棕、夜晚云发白 | 云的反照率与次表面散射随时间和天气变化：雨中风暴灰，夜里暗蓝 | 社区版 → 云层明暗 | `community/CloudTint.java`、`cloud/CloudRenderer.java` |
 | 湖水发黑、水面单调 | 水体透射距离 1 m → 3.5 m，按生物群系分 9 种水色；水面单独成页并标记为动态水（双层流动波浪，雨中更粗糙）；岸边泡沫 | 社区版 → 真实水体 / 流动波浪 / 岸边浪花 | `community/WaterLook.java`、`community/ShoreFoam.java`、`terrain/*` |
-| 夜晚单薄 | 4000 颗亮度、色温各异的星星，沿银河聚集；程序化银河带（满月时变淡）；月光更强更冷；夜间薄雾让灯光有光晕；夜间环境光默认 2.5 → 1.4 | 社区版 → 星空 | `community/StarField.java`、`community/NightSky*.java`、`confs/time/*.conf` |
+| 夜晚单薄 | 6000 颗亮度、色温各异的星星，沿银河聚集；程序化银河带（满月时变淡）；月光更强更冷；夜间薄雾让灯光有光晕；夜间环境光默认 2.5 → 1.4 | 社区版 → 星空 | `community/StarField.java`、`community/NightSky*.java`、`confs/time/*.conf` |
 | 晨昏没有体积光 | 太阳高度 2°–20° 时太阳对雾的散射最高放大到 4 倍，天空环境光对雾的散射降到 0.35，光柱和阴影的反差拉开；清晨是贴地、成团飘动的晨雾，黄昏是偏暖的薄霾，都强烈向前散射 | 社区版 → 光照与体积光 → 晨昏光柱 | `community/SunShafts.java`、`confs/time/dawn.conf`、`dusk.conf` |
 | 雨天体积光平淡 | 地面仍是阴天光照，但太阳对雾的散射单独补偿回晴天的 20%（雷暴 8%），从云缝中照出斜光柱；雨幕噪声加到 3 个 octave，密度曲线更陡，雨幕之间有清楚的空隙 | 社区版 → 光照与体积光 → 云隙光柱 | `community/SunShafts.java`、`confs/weather/*.conf` |
 | （新功能）闪电照亮雨幕 | 每道闪电沿高度放 3 个冷白光源，对雾的散射为 4 倍，照亮周围的雨幕并投下短暂的影子；远处闪电让天空环境光闪一下 | 社区版 → 光照与体积光 → 闪电照亮雨幕 | `community/LightningFlash.java`、`light/LightManager.java` |
@@ -48,12 +50,11 @@ RTX Remix for Minecraft 社区版是 NVIDIA 开源项目
 ### 尚未完成 / 已知限制
 
 - **第三人称玩家影子**：静态审查没有找到压掉影子的代码，需要在游戏里按复现步骤确认（见下方「验证」）后再修。
-- 水洼：图集 UV 拿不到世界坐标，第一版只做整体湿润反光，没有水洼。
-- 雨滴落在水面的环形涟漪：第一版用「雨中加快、加细的双层波浪」近似，没有单独的涟漪法线贴图。
+- 雨滴落在**水面**（湖、河）上的环形涟漪：仍用「雨中加快、加细的双层波浪」近似。露天地面上的积水坑和雨滴涟漪已经加入（见上表「积水坑」「雨滴涟漪」）。
 
 ### Minecraft 1.21.11 分支（`mc/1.21.11`）移植状态
 
-这个分支从 1.21.1 直接移植到 1.21.11，**目前只保证编译和 JVM 测试通过，尚未在游戏里验证渲染**。原版接入点已经不存在、暂时停用或降级的功能如下（源码中均标有 `TODO(1.21.11)`）：
+以下记录 `mc/1.21.11` 分支当时的状态，不代表本目录的 26.2 版本，本次也没有重新验证该分支。该分支从 1.21.1 直接移植到 1.21.11，当时通过编译和 JVM 测试，但没有游戏内渲染验证。因原版接入点变化而停用或降级的功能包括：
 
 - 雨雪在 Remix 画面中不绘制、不捕获。
 - 原版星星顶点拿不到（星空只剩社区版程序化星场）；字形页镜像不填充。
@@ -67,17 +68,19 @@ RTX Remix for Minecraft 社区版是 NVIDIA 开源项目
 
 ### Minecraft 26.2 分支（`mc/26.2`）移植状态
 
-在 1.21.11 分支的基础上移植到 26.2：源码从 Yarn 名迁移到 Mojang 官方名（26.x 不再混淆），构建改用 `net.fabricmc.fabric-loom` 1.19、Gradle 9.8、Java 25，安装器改为准备 Java 25。**同样只保证编译和 JVM 测试通过，尚未在游戏里验证。** 上面 1.21.11 的限制全部沿用，另外暂时停用或降级（源码中标有 `TODO(26.2)`）：
+26.2 以 `mc/1.21.1` 的 `0.1.0-ce.7` 为功能基线适配。源码使用 Mojang 官方名，依赖为 Fabric Loader 0.20.1、Fabric API 0.161.0+26.2、Loom 1.19.3、Gradle 9.8.2 和 Java 25；开发启动器、CI 与安装器使用同一 Java 主版本。
 
-- 实体捕获改为自己回放 `SubmitNodeStorage`（26.2 删除了 `MultiBufferSource`）：实体上的文字/名牌、拴绳、着火、移动中方块、影子和附魔光效不回放。
-- 手持物品火焰和烟雾特效没有调用点（原版 `ItemRenderer` 已删除）。
-- 方块破坏裂纹不再原位捕获；方块实体遍历的区段优化未移植；性能统计中的待上传区块数显示 -1。
-- 第三方模组的自定义流体外观被忽略，水和熔岩用原版流体模型。
-- 相机路径改时间只设置服务器时钟，客户端等同步后生效；区块加载时的邻居重标记过滤不生效。
+**源码迁移已进行静态检查；`mc/26.2` 的专用 [Actions 工作流](.github/workflows/build-26.2.yml) 负责 Windows x64 编译打包，安装包见成功运行的产物。本次按要求不运行测试、JNI 加载或游戏验证。以下适配范围不代表画面、性能或第三方模组兼容性已经验证。**
+
+- 按 26.2 的 feature renderer 回放实体命令，包括文字、名牌、拴绳、着火、移动方块和附魔光效；复用原版提取的实体状态，恢复手持物品的持有者/手别、火焰和烟雾。原版圆形影子仍由 Remix 的几何阴影替代。
+- 恢复雨滴折射和带雾雪片的合成、字形页镜像、多图集动画转发，以及物品图集、拾取物品和模型粒子捕获。
+- 恢复 Fabric 自定义方块/流体几何、方块破坏裂纹、多部件选择、区块可见性遍历、远区块探测、粗粒度视锥索引、存储环形重定位、邻居重标记过滤和方块实体区段扫描；补回实体、方块实体和待上传区块计数。
+- 相机路径同时更新客户端时钟并合并服务器时钟任务；带入 ce.7 的同帧粒子提交、异步实体纹理准备、帧生成感知镜头效果，以及天空/体积云读回与历史帧修正。
+- 资源重载和世界切换释放捕获命令、模型、纹理和粒子引用。26.2 原版已改变加权模型选择、玩家名称和服务器区块列表实现，不再保留失效的旧 mixin；可见性遍历复用节点和队列，但原版 Octree 仍会分配对象，不能称为整个路径零分配。
 
 ## 安装（本地）
 
-1. 构建：`.\gradlew.bat package -Parch=win64`，得到 `build\distributions\rtx-remix-renderer-0.1.0-ce.1-…-win64.jar`。
+1. 使用专用 Actions 工作流的安装包，或在 Windows / Java 25 环境构建：`.\gradlew.bat package -Parch=win64`，产物位于 `build\distributions\`。
 2. 安装到已有的官方安装目录（会自动备份被替换的 jar 和 conf）：
    ```powershell
    .\packaging\community-install.ps1 -GameDir 'D:\PCL\.minecraft\versions\RTX' -Jar '<上一步的 jar>'
@@ -129,6 +132,11 @@ What changed, each switchable in game (Options → RTX Remix Settings → Commun
   daytime sky ambient while it rains.
 - **Wet Ground**: upward faces open to the sky darken and gain a water sheen in rain by LabPBR porosity, then dry over
   about 90 seconds.
+- **Puddles**: as the rain goes on, near-mirror puddles gather on open hard ground such as paths, stone, and planks
+  (world-space decals that grow with wetness) and shrink as the ground dries; grass, sand, snow, moss, leaves, and
+  farmland never pool.
+- **Rain Ripples**: while it rains, animated raindrop rings spread over a thin film of water on open ground and stop
+  with the rain; vanilla rain splash particles are hidden while this is on.
 - **Volumetric Clouds** (Clouds, on by default): real-scale cloudscapes with a base near y 400: cumulus fields to
   the horizon in fair weather, 1500-block cumulonimbus towers with anvils in thunder, overcast in rain. Distant clouds
   are ray-marched into the sky dome as volumes with the atmosphere's own sun, moon, and transmittance LUT and fade
@@ -206,8 +214,9 @@ What changed, each switchable in game (Options → RTX Remix Settings → Commun
 - Shipped confs that an install still has in their untouched upstream form are upgraded on extraction; edited ones
   are kept (`SupersededPayloadDefaults`).
 
-Known gaps: the third-person player shadow still needs an in-game reproduction before a fix; no puddles; rain ripples
-are approximated by faster, finer wave layers.
+Known gaps: the third-person player shadow still needs an in-game reproduction before a fix; raindrop rings on open
+water (lakes, rivers) are still approximated by faster, finer wave layers (puddles and ripples on open ground are
+implemented, see above).
 
 Maintenance: merge `upstream/main`, then update `CommunityEdition.UPSTREAM_BASE`; append the hash of every replaced
 shipped conf to `rtx-remix-superseded-defaults.txt`; keep NVIDIA's SPDX line on modified files and add the Community

@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
@@ -9,6 +12,7 @@ import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.nvidia.rtxremix.minecraft.RemixRenderer;
 import com.nvidia.rtxremix.minecraft.RtxRemixMod;
+import com.nvidia.rtxremix.minecraft.entity.RemixBlockDamagePass;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
@@ -49,8 +53,15 @@ public abstract class BlockEntityRenderDispatcherMixin {
         boolean captured = be != null
                 && be.hasLevel()
                 && renderer.renderBlockEntityInPlace(be,
-                        (captureMatrices, captureQueue) ->
-                                original.call(state, captureMatrices, captureQueue, cameraState));
+                        (captureMatrices, captureQueue) -> {
+                            var previous = state.breakProgress;
+                            if (previous != null) state.breakProgress = RemixBlockDamagePass.localOverlay(previous.progress());
+                            try {
+                                original.call(state, captureMatrices, captureQueue, cameraState);
+                            } finally {
+                                state.breakProgress = previous;
+                            }
+                        });
         if (!captured) {
             original.call(state, matrices, queue, cameraState);
         }
