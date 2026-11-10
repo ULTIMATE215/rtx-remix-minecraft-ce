@@ -34,7 +34,8 @@ public final class RemixParticleFeaturePass {
         // Vanilla supplies one state per particle group. The class token keeps that
         // group's part ordinals stable even though its state is rebuilt each frame.
         submitter.submitEntity(new RemixEntityPass.EntityCaptureResult(group.getClass(), camera.pos,
-                0, layers, bones, context.getBoneCount(), "minecraft:particle_feature", false));
+                0, layers, bones, context.getBoneCount(), "minecraft:particle_feature", false),
+                RemixEntitySubmitter.NO_EXTRA_CATEGORIES);
     }
 
     public void clear() {
