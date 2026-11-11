@@ -20,9 +20,10 @@ How to build and run the mod from source. If you only want to play, read
   The developer tools launch Minecraft 26.2 on `JAVA_HOME` when it is a JDK 25
   for the selected architecture, and otherwise look in Gradle's toolchains and the Eclipse
   Adoptium, Microsoft, and Java folders under Program Files.
-- **Visual Studio 2022 Build Tools** with the Desktop development with C++
-  workload (MSVC v143). Cross-building the ARM64 bridge additionally needs the
-  toolset pinned in `rtxremix-java/native/build_native.bat` (currently 14.44).
+- **Visual Studio 2022 Build Tools or newer** with the Desktop development
+  with C++ workload. Cross-building the ARM64 bridge additionally needs the
+  C++ ARM64 build tools; `build_native.bat` selects the newest installed
+  toolset containing both the ARM64 compiler and its C/C++ runtime libraries.
 - **Git.** Everything is in the clone except the native runtime and the two
   large runtime textures, which the build pulls through Packman on first use.
 - **uv 0.13 or newer and Python 3.15 or newer**, for the developer tools that
@@ -510,7 +511,7 @@ removes its stale registration.
 
 | Symptom | Cause |
 |---|---|
-| `vswhere.exe not found` or `vcvarsall.bat failed` | Visual Studio Build Tools missing, or without the Desktop C++ workload. ARM64 also needs toolset 14.44 |
+| `vswhere.exe not found`, `vcvarsall.bat failed`, or `No complete MSVC ARM64 toolset found` | Install Visual Studio's Desktop C++ workload, including C++ ARM64 build tools when cross-building ARM64 |
 | `JAVA_HOME is not set`, or `jni.h not found` | `JAVA_HOME` unset or pointing at a JRE rather than a JDK 25 |
 | Gradle cannot fetch the SDK | Check network access to the Packman remote, or stage a matching local runtime. See [Get A Runtime](#get-a-runtime) |
 | A launch reports that Prism Launcher is not installed | Install it from [prismlauncher.org](https://prismlauncher.org), or point `prism.executable` in `tools/config.local.json` at its `prismlauncher.exe` |

@@ -22,17 +22,12 @@ REM ── Target architecture ────────────────�
 set "ARCH=%~1"
 if "%ARCH%"=="" set "ARCH=x64"
 
-REM ── Map ARCH to vcvarsall target. Pin toolset only when cross-compiling
-REM    for ARM64: cross-compiling needs the ARM64 CRT libraries, which ship
-REM    with the 14.44 toolset (not the default 14.34). x64 builds use whatever
-REM    default toolset is installed, so dev machines with any recent VS
-REM    install keep working without needing 14.44 specifically.
+REM ── Map ARCH to the vcvarsall target ───────────────────────────────
+set "VCVARS_EXTRA_ARGS="
 if /I "%ARCH%"=="x64" (
     set "VCARCH=x64"
-    set "VCVARS_EXTRA_ARGS="
 ) else if /I "%ARCH%"=="arm64" (
     set "VCARCH=x64_arm64"
-    set "VCVARS_EXTRA_ARGS=-vcvars_ver=14.44"
 ) else (
     echo ERROR: Unknown architecture: %ARCH%. Use x64 or arm64.
     exit /b 1
@@ -51,11 +46,25 @@ if not defined VS_PATH (
     exit /b 1
 )
 
+REM Select a complete ARM64 toolset. Side-by-side older toolsets may have
+REM only x64 libraries even when their ARM64 compiler is present.
+if /I "%ARCH%"=="arm64" (
+    set "RTX_ARM64_TOOLSET="
+    for /f "delims=" %%t in ('dir /b /ad /o-n "%VS_PATH%\VC\Tools\MSVC" 2^>nul') do (
+        if not defined RTX_ARM64_TOOLSET if exist "%VS_PATH%\VC\Tools\MSVC\%%t\bin\Hostx64\arm64\cl.exe" if exist "%VS_PATH%\VC\Tools\MSVC\%%t\lib\arm64\libcpmt.lib" if exist "%VS_PATH%\VC\Tools\MSVC\%%t\lib\arm64\libcmt.lib" set "RTX_ARM64_TOOLSET=%%t"
+    )
+    if not defined RTX_ARM64_TOOLSET (
+        echo ERROR: No complete MSVC ARM64 toolset found. Install C++ ARM64 build tools in Visual Studio Installer.
+        exit /b 1
+    )
+    set "VCVARS_EXTRA_ARGS=-vcvars_ver=!RTX_ARM64_TOOLSET!"
+    echo Using MSVC !RTX_ARM64_TOOLSET! for ARM64.
+)
+
 REM ── Set up MSVC environment for target arch ─────────────────────────
 call "%VS_PATH%\VC\Auxiliary\Build\vcvarsall.bat" %VCARCH% %VCVARS_EXTRA_ARGS% >nul 2>&1
 if errorlevel 1 (
-    echo ERROR: vcvarsall.bat failed. Ensure MSVC v143 C++ workload is installed.
-    if defined VCVARS_EXTRA_ARGS echo        ARM64 builds additionally require toolset 14.44.
+    echo ERROR: vcvarsall.bat failed. Ensure the Desktop C++ workload and target architecture tools are installed.
     exit /b 1
 )
 
