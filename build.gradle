@@ -245,14 +245,18 @@ dependencies {
 // Indigo needs Minecraft registries and Fabric's runtime access transformations.
 // Keep those separate from the plain JVM tests, which inspect untransformed classes.
 def fabricTestGameDir = layout.buildDirectory.dir('fabric-test-game')
-def stageFabricTestBridge = tasks.register('stageFabricTestBridge', Sync) {
-    // Pre-launch loads only the host JNI bridge. The tested JAR may target a
-    // different architecture, and no native Remix renderer runs under JUnit.
+def stageFabricTestRuntime = tasks.register('stageFabricTestRuntime', Sync) {
+    // Pre-launch loads the host JNI bridge and validates the runtime path. The
+    // tested JAR may target a different architecture; JUnit does not start Remix.
     def windows = System.getProperty('os.name').toLowerCase().startsWith('windows')
     def hostArch = System.getProperty('os.arch').toLowerCase() in ['aarch64', 'arm64'] ? 'arm64' : 'win64'
-    if (windows) dependsOn hostArch == 'arm64' ? 'compileNativeArm64' : 'compileNativeWin64'
+    if (windows) {
+        dependsOn hostArch == 'arm64' ? 'compileNativeArm64' : 'compileNativeWin64'
+        dependsOn hostArch == 'arm64' ? 'fetchRuntimeSdkArm64' : 'fetchRuntimeSdkWin64'
+    }
     onlyIf { windows }
     from("build/native/${hostArch}") { include 'remixbridge.dll' }
+    from("remix-runtime/${hostArch}") { include 'd3d9.dll' }
     from('packaging/remix-vulkan-layer.json')
     into fabricTestGameDir.map { it.dir('remix-sdk') }
 }
@@ -260,7 +264,7 @@ def stageFabricTestBridge = tasks.register('stageFabricTestBridge', Sync) {
 def fabricTest = tasks.register('fabricTest', Test) {
     group = 'verification'
     description = 'Runs renderer integration tests under Fabric Loader.'
-    dependsOn stageFabricTestBridge
+    dependsOn stageFabricTestRuntime
     testClassesDirs = sourceSets.test.output.classesDirs
     classpath = sourceSets.test.runtimeClasspath - configurations.testRuntimeClasspath +
             configurations.fabricTestRuntime
@@ -556,6 +560,7 @@ tasks.register('testNativeVulkan', Exec) {
 
 if (System.getProperty('os.name').toLowerCase().startsWith('windows')) {
     tasks.named('check') { dependsOn 'testNativeVulkan' }
+    fabricTest.configure { dependsOn 'testNativeVulkan' }
 }
 
 jar {
