@@ -1100,7 +1100,7 @@ public final class BlockQuadEmitter {
      */
     public static String classifyBlockLayer(BlockState state) {
         // Vanilla draws clear glass as a cutout: the texture is alpha 0 between
-        // the frame pixels and the GL path simply discards those. Remix can
+        // the frame pixels and the vanilla shader simply discards those. Remix can
         // refract through it instead, so clear glass takes its own layer and a
         // translucent material with the frame as a diffuse layer.
         // Stained glass is already translucent and keeps vanilla's layer.

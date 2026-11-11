@@ -30,9 +30,10 @@ public final class RemixWeatherRenderer {
     private int snowQuads;
     private GpuTextureView lightmap;
     private boolean cameraReady;
-    private WeatherGpu gpu;
     private int lastDrawCount;
     private int lastQuadCount;
+
+    public static void registerShaders() { WeatherGpu.registerShaders(); }
 
     public void beginCaptureFrame() {
         rainQuads = snowQuads = 0;
@@ -42,7 +43,7 @@ public final class RemixWeatherRenderer {
 
     public void updateCamera(Camera camera, float fovYDegrees, float aspect) {
         modelView.rotation(rotation.set(camera.rotation()).conjugate());
-        projection.identity().perspective((float) Math.toRadians(fovYDegrees), aspect, NEAR_PLANE, FAR_PLANE);
+        projection.identity().perspective((float) Math.toRadians(fovYDegrees), aspect, NEAR_PLANE, FAR_PLANE, true);
         cameraReady = true;
     }
 
@@ -70,14 +71,13 @@ public final class RemixWeatherRenderer {
         fog.renderDistanceEnd = currentFog.renderDistanceEnd;
     }
 
-    public void render(int finalColorTexture, int depthTexture) {
+    public void render(GpuTextureView finalColorTexture, GpuTextureView depthTexture) {
         if (rainQuads + snowQuads == 0) return;
         try {
-            if (finalColorTexture <= 0 || depthTexture <= 0 || lightmap == null || !cameraReady) {
+            if (finalColorTexture == null || depthTexture == null || lightmap == null || !cameraReady) {
                 throw new IllegalStateException("Weather requires this frame's Remix colour, depth and camera");
             }
-            if (gpu == null) gpu = new WeatherGpu();
-            gpu.render(Minecraft.getInstance().gameRenderer.mainRenderTarget(), vertices,
+            WeatherGpu.render(Minecraft.getInstance().gameRenderer.mainRenderTarget(), vertices,
                     rainQuads, snowQuads, lightmap, projection, modelView, fog, finalColorTexture, depthTexture);
             lastDrawCount = (rainQuads > 0 ? 1 : 0) + (snowQuads > 0 ? 1 : 0);
             lastQuadCount = rainQuads + snowQuads;
@@ -96,10 +96,6 @@ public final class RemixWeatherRenderer {
         if (vertices != null) {
             MemoryUtil.memFree(vertices);
             vertices = null;
-        }
-        if (gpu != null) {
-            gpu.close();
-            gpu = null;
         }
     }
 }

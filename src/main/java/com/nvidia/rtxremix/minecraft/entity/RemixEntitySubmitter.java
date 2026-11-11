@@ -2344,7 +2344,7 @@ public class RemixEntitySubmitter {
 
     /**
      * Decodes a pack texture to RGBA bytes. Safe off the render thread: the image is
-     * private to the call and never touches GL.
+     * private to the call and never touches the GPU.
      */
     private static DecodedImage decodeRGBA(Resource resource) throws IOException {
         try (InputStream stream = resource.open();

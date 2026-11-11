@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 import datetime as dt
 import unittest
@@ -47,7 +50,22 @@ class MachineTests(unittest.TestCase):
 
         self.assertEqual(gpu["Name"], "NVIDIA RTX PRO 6000 Blackwell Workstation Edition/PCIe/SSE2")
         self.assertEqual(gpu["DriverVersion"], "32.0.15.9636")
-        self.assertEqual(gpu["GL_VENDOR"], "NVIDIA Corporation")
+        self.assertEqual(gpu["AdapterCompatibility"], "NVIDIA Corporation")
+        self.assertEqual(gpu["graphicsBackend"], "OpenGL")
+        self.assertEqual(gpu["graphicsDriver"], "4.6.0 NVIDIA 596.36")
+
+    def test_benchmark_gpu_reports_vulkan_without_opengl_fields(self):
+        gpu = machine.benchmark_gpu_from_system(
+            {
+                "gpu": "NVIDIA GeForce RTX 4070 Laptop GPU",
+                "gpuVendor": "NVIDIA",
+                "graphicsBackend": "Vulkan",
+                "graphicsDriver": "621.1.0",
+            }
+        )
+        self.assertEqual(gpu["graphicsBackend"], "Vulkan")
+        self.assertEqual(gpu["graphicsDriver"], "621.1.0")
+        self.assertNotIn("GL_RENDERER", gpu)
 
     def test_parse_power_scheme_reads_the_active_plan_name_and_guid(self):
         text = "Power Scheme GUID: 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c  (High performance)\n"

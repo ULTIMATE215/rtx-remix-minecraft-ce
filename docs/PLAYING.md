@@ -11,10 +11,12 @@ This guide takes you from a downloaded JAR to a path-traced world. You need a
 Minecraft 26.2 instance with Java 25 and Fabric Loader. Fabric API, the RTX
 Remix runtime, and required resources are bundled in the mod JAR.
 
-This branch targets Minecraft 26.2 with ce.7 source parity. Its dedicated
-**Build Minecraft 26.2** Actions workflow compiles and packages Windows x64 builds;
-download the JAR from a successful run's artifacts. That workflow excludes
-tests, and game rendering remains unverified.
+This branch retains the ce.7 features and uses Minecraft 26.2's native Vulkan
+backend while Remix provides RTX path tracing. No additional Vulkan rendering
+mod is needed. Its dedicated **Build Minecraft 26.2** Actions workflow runs
+Java, native export-layer, and tooling tests and packages Windows x64 builds;
+download the JAR from a successful run's artifacts. Actual RTX gameplay
+remains unverified.
 
 ## What You Need
 

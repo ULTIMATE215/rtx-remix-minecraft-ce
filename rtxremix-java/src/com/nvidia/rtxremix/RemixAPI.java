@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix;
 
@@ -127,6 +130,26 @@ public class RemixAPI {
         if (result != ErrorCode.SUCCESS) {
             throw new RemixException("Failed to set environment variable " + name, result);
         }
+    }
+
+    /**
+     * Describes a live image exported by the runtime, including its actual
+     * memory type. The bridge's Vulkan export layer must have been enabled
+     * before the runtime created its device. Call after Submit on the render
+     * thread; the handle remains owned by Remix.
+     */
+    public static VulkanImageDescription describeVulkanImage(long handle, int width, int height, int vkFormat) {
+        return new VulkanImageDescription(RemixBridge.vulkanImageDescription(handle, width, height, vkFormat));
+    }
+
+    /** Allocation-free export identity query; detects recycled Win32 handles after a resize. */
+    public static long vulkanImageGeneration(long handle, int width, int height, int vkFormat) {
+        return RemixBridge.vulkanImageGeneration(handle, width, height, vkFormat);
+    }
+
+    /** Describes the exporting device before importing an opaque Vulkan semaphore handle. */
+    public static VulkanSemaphoreDescription describeVulkanSemaphore(long handle) {
+        return VulkanSemaphoreDescription.decode(RemixBridge.vulkanSemaphoreDescription(handle));
     }
 
     private static java.io.File bindBridge(String dllPath) {

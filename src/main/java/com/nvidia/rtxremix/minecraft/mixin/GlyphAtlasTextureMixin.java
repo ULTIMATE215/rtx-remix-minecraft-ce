@@ -24,7 +24,7 @@ import org.spongepowered.asm.mixin.injection.At;
  *
  * <p>Both NativeImage glyphs and Unihex's byte buffers reach the same
  * CommandEncoder upload. The scope identifies the destination page while
- * GlCommandEncoderMixin copies the pixels before their owner releases them.
+ * TextureUploadMixin copies the pixels before their owner releases them.
  */
 @Mixin(FontTexture.class)
 public abstract class GlyphAtlasTextureMixin implements GlyphPageMirror.Owner {

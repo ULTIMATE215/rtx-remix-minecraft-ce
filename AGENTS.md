@@ -79,7 +79,8 @@ excluded. See
 
 The mod needs the native runtime, not only Java code, and `NativeExtractor`
 unpacks the bundled payload on first launch, version or architecture change,
-or when `remix-sdk/` or its `d3d9.dll` is missing. Deleting
+or when `remix-sdk/`, `d3d9.dll`, `remixbridge.dll`, or the Vulkan layer manifest
+is missing. Deleting
 `.rtx-remix-version` also forces full re-extraction. Full extraction replaces
 the mod-owned `remix-sdk/`, `rtx.conf`, and the shipped runtime textures in
 `textures/`, leaving anything else in that folder alone, so a JAR installed
@@ -196,17 +197,28 @@ wrapper, and runtime support for updating a texture from memory. Glyph pages are
 mirrored on upload, because vanilla assembles them on the GPU and never keeps
 them on the CPU.
 
-**Frame pacing.** Remix renders into one interop color and one depth image; GL
-waits for Remix's done value on the GPU, composites the HUD, copies the frame
-back, and signals a client-done value, and Present then copies the image to the
-swapchain. By default Present blocks the render thread until GL's signal lands,
+**Vulkan integration.** Minecraft 26.2 uses its native Vulkan backend.
+`VulkanBootstrap` enables a process-local layer in `remixbridge.dll` before
+either device exists. `native/vulkan_exports.cpp` observes the runtime's
+exported image creation, allocation, device/driver UUIDs and external ownership
+release; it does not change the runtime C API or Vulkan commands. Imports use
+that exact description and reject missing metadata or unsupported contracts.
+`RemixVulkanSurface` closes vanilla's swapchain before Remix takes the HWND.
+Sky and cloud compute use Minecraft's Vulkan encoder with fenced readbacks;
+rain and snow use its RenderPipeline API and the imported primary depth.
+
+**Frame pacing.** Remix renders into one interop color and one depth image;
+Minecraft's Vulkan queue waits for Remix's done value, acquires external
+ownership, composites the HUD, copies the frame back, releases ownership and
+signals client completion. Present then copies the image to the swapchain.
+By default Present blocks the render thread until the client signal lands,
 so CPU and GPU take turns. Top Optimization's pipelined present
 (`community/perf/`) passes `disableCpuWaitForExternalSemaphores` on steady
 gameplay frames only, so the CPU builds frame N+1 while the GPU traces frame N.
 `PresentWaitPolicy` blocks whenever a screen or Remix menu is open and for a few
-frames after anything that may reallocate the interop images; `GlInterop`
-finishes GL before replacing an import, and its client-done value advances only
-past an accepted signal.
+frames after anything that may reallocate the interop images; `VulkanInterop`
+submits and drains Minecraft's queue before replacing an import. Its client-done
+value advances only after the encoder has submitted the recorded signal.
 
 **Particles.** Slot preparation and CPU mesh snapshots run on a dedicated worker
 that starts with the frame and overlaps the camera, light, terrain, entity, and
@@ -221,7 +233,7 @@ blended particle from the radiance cache with no self-shadowing, so
 `ParticleTint` draws soot near-black to keep smoke dark over a lit floor.
 
 **Entities.** Entities and block entities that vanilla already draws are
-captured in place, so a model is evaluated once rather than once for OpenGL and
+captured in place, so a model is evaluated once rather than once for vanilla and
 again for Remix; entities outside vanilla's frustum are swept up closest-first
 under a budget, because a path tracer needs them for shadows and reflections,
 and an entity that owns a Remix light this frame is swept at any distance so
@@ -275,7 +287,7 @@ diluting the sampler's candidate pool.
   because the volumetric grid reuses the previous frame's radiance and a
   camera-locked emitter would smear into distant geometry (`LightManager`).
 - Ordinary classes must not live in the mixin package (`MixinPackageBoundaryTest`).
-- A mixin that cancels vanilla work replays the GL, fog, and framebuffer state
+- A mixin that cancels vanilla work replays the GPU, fog, and framebuffer state
   its target would have set (`WorldRendererMixin`).
 - Never cancel `WorldRenderer.render()` itself or return early past
   `setupTerrain`. Remix is hosted inside vanilla's traversal and captures its
@@ -361,12 +373,16 @@ diluting the sampler's candidate pool.
   `TerrainState`).
 - Keep `rtx.showUICursor = false` in `packaging/rtx.conf`. The mod does not
   write this key; the runtime software cursor can leave the OS cursor hidden.
-- Present only ever waits for a client-done value GL accepted a signal for, and
+- Present only ever waits for a client-done value submitted to Minecraft's Vulkan queue, and
   only `PresentWaitPolicy` may let Present skip its CPU wait. Anything that can
   reallocate the interop images (a resize, a DLSS or frame-generation change, a
   world change) must happen while presents block, which is why the policy
   blocks while any screen or Remix menu is open and settles after such events
-  (`RemixRenderer`, `GlInterop`, `ClientDoneTimeline`).
+  (`RemixRenderer`, `VulkanInterop`, `ClientDoneTimeline`).
+- Never guess an opaque Win32 allocation's memory type, size or image flags.
+  Import only a complete observed description from the same physical device
+  and driver; finish in-flight client work before replacing an import. Include
+  `remix-vulkan-layer.json` beside the bridge in every staging/install path.
 - Change `BlockLightDefaults` and `BlockLightIntensityControls` together.
   Their rule-id sets are validated during resource reload, not just unit tests.
 - Run entity capture on the render thread. Vanilla shares mutable renderer and

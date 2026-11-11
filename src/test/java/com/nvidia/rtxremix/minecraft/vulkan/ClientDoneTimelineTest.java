@@ -2,7 +2,7 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
  */
-package com.nvidia.rtxremix.minecraft.gl;
+package com.nvidia.rtxremix.minecraft.vulkan;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -38,7 +38,7 @@ class ClientDoneTimelineTest {
         assertEquals(1L, timeline.valueToPresent());
 
         long next = timeline.beginSignal();
-        assertTrue(next > failed, "GL may already hold the failed value");
+        assertTrue(next > failed, "The driver may already hold the failed value");
         timeline.signalAccepted();
         assertEquals(next, timeline.valueToPresent());
         assertEquals(next, timeline.lastRequested());

@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.texture;
 
@@ -14,7 +17,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Pins how an uploaded glyph lands in its page mirror. The mirror must hold what the GL
+ * Pins how an uploaded glyph lands in its page mirror. The mirror must hold what the GPU
  * texture holds as the text shaders read it: a colour page keeps the uploaded channels
  * as {@code glTexSubImage2D} converts them into RGBA, an intensity page spreads red
  * across all four channels because {@code rendertype_text_intensity} samples

@@ -74,7 +74,7 @@ mutation of a retained instance must be followed immediately by a submit, or
 the change never reaches the scene.
 
 **A mixin that cancels vanilla work inherits its side effects.** Preserve the
-net GL, fog, lightmap and framebuffer state the caller expects, not only the
+net GPU, fog, lightmap and framebuffer state the caller expects, not only the
 entry calls. Never cancel `WorldRenderer.render()` itself: that traversal
 hosts Remix's frame. See [Cancelling Vanilla Render Work](#cancelling-vanilla-render-work).
 
@@ -200,8 +200,8 @@ for new script text and preserve the BOM on `packaging/installer.ps1`.
 ### Cancelling Vanilla Render Work
 
 A `HEAD` cancel, `@Redirect`, or `@WrapOperation` that skips a render method
-must leave the net state its caller expects. Stale GL state can slow
-`Remix.Present` only on another driver, without an obvious visual failure.
+must leave the net state its caller expects. Missing dependencies or resource
+state transitions can fail only on another driver, without an obvious visual failure.
 Disassemble both ends of the target with `javap -p -c` before changing it.
 
 At entry, look for callbacks, `RenderSystem` calls,
@@ -274,8 +274,18 @@ export afterwards.
 
 The suite covers JVM-side behavior and data contracts.
 
-It does not cross the JNI boundary and it does not render, so it cannot tell you
-that a change looks right. Two things follow. First, `test` still needs the C++
+`testNativeVulkan` tests the native export layer against a downstream dispatch
+fixture and loads the built bridge to verify its Vulkan/JNI exports. Windows
+`check` and `build` include it. `cloudGpuTest` executes the atmospheric sky and
+cloud compute shaders and checks frame-transfer pixels on Vulkan 1.2,
+including software Vulkan, and enables
+synchronization validation when the Khronos validation layer is installed.
+The ordinary tests compile rain/snow shaders through Minecraft's Vulkan shader
+compiler and apply the Vulkan mixins under Fabric Loader. These checks do not
+exercise Win32 external-memory import against the RTX runtime or present a game.
+
+Automated checks cannot tell you that a change looks right in the game. Two
+things follow. First, `test` still needs the C++
 toolchain, because every task that reaches `classes` builds the bridge and
 fetches and stages a missing runtime first. Second, a rendering change is not
 reviewed until someone has looked at it in a running game: build and launch it

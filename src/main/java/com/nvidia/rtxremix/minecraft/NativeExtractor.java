@@ -116,8 +116,9 @@ public final class NativeExtractor {
      * with whatever else is there, so each shipped file replaces only its own
      * live copy, through a staging file beside it.
      *
-     * <p>A current marker skips the SDK copy only while {@code remix-sdk/d3d9.dll}
-     * is present. Missing author-owned files, {@code rtx.conf}, and runtime
+     * <p>A current marker skips the SDK copy only while {@code d3d9.dll},
+     * {@code remixbridge.dll}, and the Vulkan layer manifest are present in
+     * {@code remix-sdk/}. Missing author-owned files, {@code rtx.conf}, and runtime
      * textures are restored on every launch without overwriting existing files.
      * Recovering a small conf must not drag the whole SDK payload with it.
      *
@@ -171,7 +172,9 @@ public final class NativeExtractor {
         if (Files.exists(versionFile)) {
             String existing = Files.readString(versionFile).strip();
             if (markerMatches(existing, expectedMarker)) {
-                if (Files.isRegularFile(remixSdkDir.resolve("d3d9.dll"))) {
+                if (Files.isRegularFile(remixSdkDir.resolve("d3d9.dll"))
+                        && Files.isRegularFile(remixSdkDir.resolve("remixbridge.dll"))
+                        && Files.isRegularFile(remixSdkDir.resolve("remix-vulkan-layer.json"))) {
                     if (restoreMissingRtxConf(nativeRoot, gameDir)) {
                         LOGGER.info("Restored mod-owned {} after it was deleted since the last extraction",
                                 RTX_CONF);

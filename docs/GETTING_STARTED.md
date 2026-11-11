@@ -31,6 +31,8 @@ How to build and run the mod from source. If you only want to play, read
   downloads Python 3.15 when no such Python is installed, so that first
   command needs network access.
 - **An NVIDIA RTX GPU**, 30-series or newer, to run what you build.
+  The client uses Minecraft 26.2's native Vulkan backend and the same physical
+  GPU/driver as Remix. A separate Vulkan renderer mod is not required.
 - **Prism Launcher 9.0 or newer, signed in to a Microsoft account that owns
   Minecraft: Java Edition**, to launch what you build. Install it from
   [prismlauncher.org](https://prismlauncher.org); the developer tools never
@@ -40,6 +42,34 @@ How to build and run the mod from source. If you only want to play, read
   Gradle fetches it automatically. See [Get A Runtime](#get-a-runtime) for local overrides.
 
 ## Get A Runtime
+
+### Vulkan integration
+
+The installable JAR includes `remixbridge.dll` and `remix-vulkan-layer.json`.
+Pre-launch extraction stages both under `remix-sdk/` and enables
+`VK_LAYER_RTXREMIX_export_info` for this process before Minecraft or Remix
+creates a Vulkan device. Existing explicit layer names and search paths are
+preserved. Nothing is installed into the system Vulkan registry.
+
+The pinned runtime still supplies `d3d9.dll`: it hosts Remix's Vulkan renderer
+and C API. The bridge's observation layer supplies the original creation flags,
+allocation size and memory type, UUIDs, and external ownership release needed
+to import the runtime's opaque Win32 handles. An absent observation, device
+mismatch, unsupported description or missing release fails with a diagnostic;
+the mod does not select a guessed memory type. The copied runtime header and
+SDK pins are unchanged by this integration.
+
+Minecraft's vanilla Vulkan swapchain is closed before Remix creates its own.
+Minecraft composites Remix color, depth-aware rain/snow and the HUD on its
+Vulkan queue, then releases the shared images and submits its timeline signal
+before calling Remix Present. Sky and volumetric clouds also compute on Vulkan.
+
+Windows RTX validation must cover entering and leaving worlds, resize and
+fullscreen, DLSS/frame-generation changes, Remix menus, `/rtx off` and shutdown.
+JVM, shader and software Vulkan tests cannot establish that the original
+driver crash is fixed.
+
+### Runtime package
 
 The mod is a renderer front end. It needs the native Remix runtime, which is a
 directory containing `d3d9.dll` and its supporting files, and it will not draw
@@ -277,7 +307,7 @@ Every task that reaches `classes` runs `setupRuntime` first, which compiles the
 bridge and stages the runtime. `test` and `build` therefore need a staged
 runtime and the C++ toolchain just as `tools\rtx.bat launch` does.
 `setupRuntime` also syncs a full copy of the runtime, PDBs included, with the
-bridge, `rtx.conf`, the gameplay conf payload, and the runtime textures into
+bridge and Vulkan layer manifest, `rtx.conf`, the gameplay conf payload, and the runtime textures into
 `run/`, the game directory of Gradle's `runClient` task, so every build
 refreshes it. The developer tools' Prism launches use `run-prism\` instead.
 
@@ -500,7 +530,7 @@ removes its stale registration.
 | `package` cannot find the ARM64 toolset | Install the version pinned by `build_native.bat`, or use `package -Parch=win64` for a single-architecture artifact |
 | Initialization reports `DRIVER_VERSION_BELOW_MINIMUM` | Update the driver. The minimum is a capability gate; lowering `dxvk.nvidiaMinDriver` can enable unsupported paths and cause GPU faults |
 | `Startup` unexpectedly returns `REMIX_DEVICE_WAS_NOT_REGISTERED` after an API change | Check header, bridge and runtime together for a mismatched `remixapi_Interface` layout before continuing native calls |
-| `/rtx off` is slower than `/rtx on` | The off path renders vanilla GL at full resolution through the Remix swapchain; the on path can use DLSS's lower internal resolution. The toggle is not a standalone vanilla performance baseline |
+| `/rtx off` is slower than `/rtx on` | The off path renders vanilla Vulkan at full resolution through the Remix swapchain; the on path can use DLSS's lower internal resolution. The toggle is not a standalone vanilla performance baseline |
 
 For `INCOMPATIBLE_VERSION`, restore the published runtime with
 `tools\rtx.bat sdk packman` or stage a build with a matching header, then

@@ -15,7 +15,7 @@
 //    discs: the sun is a distant light and a billboard, and a disc in the dome
 //    would be sampled as light a second time.
 
-#version 430 core
+#version 450
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -25,11 +25,11 @@ layout(rgba32f, binding = 2) uniform image2D UpperViewImage;
 layout(rgba16f, binding = 3) uniform image2D FinalSkyImage;
 layout(rgba32f, binding = 4) uniform image2D MultiScatteringLutImage;
 
-layout(binding = 0) uniform sampler2D TransmittanceLut;
-layout(binding = 1) uniform sampler2D MultiScatteringLut;
+layout(binding = 5) uniform sampler2D TransmittanceLut;
+layout(binding = 6) uniform sampler2D MultiScatteringLut;
 
-uniform int Pass;
-layout(std140, binding = 0) uniform SkyParameters {
+layout(push_constant) uniform Dispatch { int Pass; };
+layout(std140, binding = 7) uniform SkyParameters {
     vec4 SunDirectionAndRadius;
     vec4 MoonDirectionAndRadius;
     vec4 SunRadianceAndAtmosphereScale;

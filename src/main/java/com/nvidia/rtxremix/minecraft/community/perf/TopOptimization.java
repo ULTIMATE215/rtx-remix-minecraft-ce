@@ -42,7 +42,7 @@ public final class TopOptimization {
     /** One optimization the master switch governs. */
     public enum Technique {
         /**
-         * Present waits for the GL composite on the GPU instead of blocking the
+         * Present waits for Minecraft's Vulkan composite on the GPU instead of blocking the
          * render thread, so the CPU builds frame N+1 while the GPU traces frame N.
          */
         PIPELINED_PRESENT("pipelinedPresent", true),

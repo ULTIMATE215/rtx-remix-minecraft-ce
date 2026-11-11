@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.benchmark;
 
@@ -30,7 +33,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.storage.LevelResource;
-import org.lwjgl.opengl.GL11;
+import com.mojang.blaze3d.systems.RenderSystem;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -608,7 +611,7 @@ public class BenchmarkController {
         }
 
         // Skip Minecraft's slow graceful shutdown (world save + CLIENT_STOPPING
-        // listeners + GL cleanup can take 2+ min). Use only when we explicitly
+        // listeners + GPU cleanup can take 2+ min). Use only when we explicitly
         // choose speed over normal DLL detach/shutdown behavior.
         LOGGER.info("exitOnComplete=true, halting JVM now...");
         System.out.flush();
@@ -1417,13 +1420,11 @@ public class BenchmarkController {
 
         // System info
         JsonObject system = new JsonObject();
-        try {
-            system.addProperty("gpu", GL11.glGetString(GL11.GL_RENDERER));
-            system.addProperty("gpuVendor", GL11.glGetString(GL11.GL_VENDOR));
-            system.addProperty("glVersion", GL11.glGetString(GL11.GL_VERSION));
-        } catch (Exception e) {
-            system.addProperty("gpu", "unknown");
-        }
+        var deviceInfo = RenderSystem.getDevice().getDeviceInfo();
+        system.addProperty("gpu", deviceInfo.name());
+        system.addProperty("gpuVendor", deviceInfo.vendorName());
+        system.addProperty("graphicsDriver", deviceInfo.driverInfo());
+        system.addProperty("graphicsBackend", RenderSystem.getBackendDescription());
         system.addProperty("os", System.getProperty("os.name") + " " + System.getProperty("os.version"));
         system.addProperty("cpu", getCpuName());
         system.addProperty("javaVersion", System.getProperty("java.version"));
@@ -1515,7 +1516,7 @@ public class BenchmarkController {
         StringBuilder sb = new StringBuilder();
         sb.append(String.format("\n=== Benchmark Complete (%d frames) ===\n", recordFrames));
         sb.append(String.format("  Branch:   %s (%s)\n", gitBranch, gitCommit));
-        sb.append(String.format("  GPU:      %s\n", GL11.glGetString(GL11.GL_RENDERER)));
+        sb.append(String.format("  GPU:      %s\n", RenderSystem.getDevice().getDeviceInfo().name()));
         sb.append(String.format("  CPU:      %s\n", getCpuName()));
         sb.append(String.format("  Memory:   %d MB | Heap: %d MB\n", getSystemMemoryMb(), Runtime.getRuntime().maxMemory() / (1024 * 1024)));
         sb.append(String.format("  World:    %s | Path: %s | Warmup: %d frames\n",

@@ -19,11 +19,12 @@ Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 > **Downloads / 下载**: select a package for your exact Minecraft version on
 > [Releases](https://github.com/CuteEthanLeo/rtx-remix-minecraft-ce/releases), tagged
 > `v<mod version>+mc<Minecraft version>`. Version-specific sources live on `mc/<version>` branches.
-> The 26.2 source aligns with 1.21.1 ce.7. The dedicated
+> The 26.2 source retains the 1.21.1 ce.7 features and uses Minecraft's native Vulkan backend.
+> The dedicated
 > [Build Minecraft 26.2 workflow](.github/workflows/build-26.2.yml) builds an installable Windows x64 JAR
-> on pushes to `mc/26.2`; download it from the successful run's artifacts. Tests are excluded
-> from that workflow, and game rendering remains unverified.
-> 26.2 分支的 Actions 产物为可直接放入 `mods` 的 JAR，内含 Fabric API、Remix 运行时和必要资源；该工作流不运行测试或游戏验证。
+> on pushes to `mc/26.2`; download it from the successful run's artifacts. The workflow runs
+> Java, native export-layer, and tooling tests; actual RTX gameplay remains unverified.
+> 26.2 分支保留 RTX 光追并使用游戏自带 Vulkan 后端。Actions 运行自动测试，产物为可直接放入 `mods` 的 JAR，内含 Fabric API、Remix 运行时和必要资源；实际 RTX 游戏画面仍待验证。
 
 
 This Fabric mod renders Minecraft Java Edition 26.2 through NVIDIA RTX Remix
@@ -69,6 +70,8 @@ from GitHub's artifact ZIP.
 3. Launch the Fabric instance. The first launch extracts the bundled Remix runtime and resources.
 
 Fabric API is included; no separate runtime download or installer is needed.
+The mod selects Minecraft's native Vulkan backend automatically; no additional
+Vulkan rendering mod is needed.
 这是 Minecraft 模组 JAR，放入对应 Fabric 实例的 `mods` 目录即可使用。
 
 The step-by-step version, with launcher advice and troubleshooting, is in

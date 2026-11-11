@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 DASHBOARD_HTML = r"""<!doctype html>
 <html lang="en">
@@ -940,9 +943,10 @@ DASHBOARD_HTML = r"""<!doctype html>
         return `${index + 1}. ${gpu.Name || "unknown"} (${marker}) driver ${gpu.DriverVersion || "-"}${ramMib ? `, ${ramMib} MiB` : ""}`;
       });
       const lines = [
-        benchmark.gpu ? `benchmark GL_RENDERER: ${benchmark.gpu}` : "",
-        benchmark.gpuVendor ? `benchmark GL_VENDOR: ${benchmark.gpuVendor}` : "",
-        benchmark.glVersion ? `GL_VERSION: ${benchmark.glVersion}` : "",
+        benchmark.gpu ? `benchmark graphics device: ${benchmark.gpu}` : "",
+        benchmark.gpuVendor ? `GPU vendor: ${benchmark.gpuVendor}` : "",
+        benchmark.graphicsBackend ? `backend: ${benchmark.graphicsBackend}` : "",
+        (benchmark.graphicsDriver || benchmark.glVersion) ? `graphics driver: ${benchmark.graphicsDriver || benchmark.glVersion}` : "",
         selected.selectionReason ? `selection: ${selected.selectionReason}` : "",
         adapters.length ? `adapters: ${adapters.join(" | ")}` : "",
       ];

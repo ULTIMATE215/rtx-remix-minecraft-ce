@@ -42,7 +42,7 @@ import net.minecraft.world.phys.Vec3;
  * <p>Entities reach this class two ways. Those vanilla already draws are captured in place:
  * {@code WorldRendererMixin} routes each one to {@code RemixRenderer.renderEntityInPlace},
  * which calls {@link #captureAndSubmit}, so the model is evaluated once rather than once for
- * OpenGL and again here. A path tracer also needs entities the camera cannot see, for shadows
+ * vanilla rendering and again here. A path tracer also needs entities the camera cannot see, for shadows
  * and reflections, so {@link #finishFrame} then sweeps the world for entities vanilla skipped
  * and submits them closest-first under a {@code MAX_ENTITIES} budget.
  *

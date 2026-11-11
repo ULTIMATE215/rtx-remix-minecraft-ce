@@ -4,6 +4,10 @@
  */
 package com.nvidia.rtxremix.minecraft;
 
+import com.nvidia.rtxremix.RemixAPI;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 /**
  * Decides whether RivaTuner Statistics Server's Vulkan layer is kept out of the Remix runtime.
  *
@@ -26,6 +30,7 @@ package com.nvidia.rtxremix.minecraft;
  * {@value #DISABLE_VARIABLE} is always respected.
  */
 public final class RtssVulkanLayerPolicy {
+    private static final Logger LOGGER = LoggerFactory.getLogger(RtssVulkanLayerPolicy.class);
 
     /** The disable switch in RTSS's layer manifest, {@code RTSSVkLayer64.json}. */
     public static final String DISABLE_VARIABLE = "DISABLE_RTSS_LAYER";
@@ -33,6 +38,31 @@ public final class RtssVulkanLayerPolicy {
     public static final String ALLOW_PROPERTY = "rtxremix.allowRtssVulkanLayer";
 
     private RtssVulkanLayerPolicy() {}
+
+    /** Applies the process-only policy before either Minecraft or Remix creates a Vulkan instance. */
+    public static void applyBeforeInstanceCreation(String dllPath) {
+        String existing = System.getenv(RtssVulkanLayerPolicy.DISABLE_VARIABLE);
+        if (!RtssVulkanLayerPolicy.shouldDisable(
+                System.getProperty(RtssVulkanLayerPolicy.ALLOW_PROPERTY), existing)) {
+            LOGGER.info("RTSS Vulkan layer left to the loader ({}={}, -D{}={})",
+                    RtssVulkanLayerPolicy.DISABLE_VARIABLE, existing,
+                    RtssVulkanLayerPolicy.ALLOW_PROPERTY,
+                    System.getProperty(RtssVulkanLayerPolicy.ALLOW_PROPERTY));
+            return;
+        }
+        try {
+            RemixAPI.setProcessEnvironmentVariable(dllPath,
+                    RtssVulkanLayerPolicy.DISABLE_VARIABLE, RtssVulkanLayerPolicy.DISABLE_VALUE);
+            LOGGER.info("RTSS Vulkan layer disabled for Minecraft and Remix: with DLSS frame generation"
+                    + " in fullscreen it faults the GPU (-D{}=true keeps it)",
+                    RtssVulkanLayerPolicy.ALLOW_PROPERTY);
+        } catch (RuntimeException e) {
+            LOGGER.warn("Could not disable the RTSS Vulkan layer; if RTSS runs, DLSS frame generation"
+                    + " in fullscreen may lose the GPU device", e);
+        }
+    }
+
+
 
     /**
      * Whether to set {@value #DISABLE_VARIABLE} before the runtime loads.

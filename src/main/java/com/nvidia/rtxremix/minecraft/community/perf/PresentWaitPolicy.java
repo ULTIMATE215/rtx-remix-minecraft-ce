@@ -5,11 +5,11 @@
 package com.nvidia.rtxremix.minecraft.community.perf;
 
 /**
- * Decides, once per present, whether Remix may wait for the GL composite on
- * the GPU ({@link Mode#PIPELINED}) or must block the render thread until GL
- * is done, as it always did.
+ * Decides, once per present, whether Remix may wait for Minecraft's composite
+ * on the GPU ({@link Mode#PIPELINED}) or must block the render thread until
+ * Minecraft's Vulkan submission is done.
  *
- * <p>Blocking is the safe mode: once Present returns, every GL command of the
+ * <p>Blocking is the safe mode: once Present returns, every client command of the
  * frame has finished. Pipelining gives that guarantee up, so it runs only in
  * steady gameplay frames. Any open screen or Remix menu, a frame without a
  * world, a switched-off technique, and the first {@link #SETTLE_FRAMES} frames
@@ -17,12 +17,13 @@ package com.nvidia.rtxremix.minecraft.community.perf;
  * because DLSS, frame generation and resolution changes made there reallocate
  * the interop images.
  *
- * <p>Switching in either direction is safe: GL runs its commands in order, so
- * a blocking wait for frame N's signal implies every earlier frame finished.
+ * <p>Switching in either direction is safe: each client-done signal covers all
+ * earlier client work, so a blocking wait for frame N's signal implies every
+ * earlier frame finished.
  *
  * <p>A present or interop failure is a strike; {@link #STRIKE_LIMIT} strikes
  * within {@link #STRIKE_WINDOW_FRAMES} frames tell the caller to veto the
- * technique. Pure logic, no GL or Remix calls, no allocation.
+ * technique. Pure logic, no Vulkan or Remix calls, no allocation.
  */
 public final class PresentWaitPolicy {
 

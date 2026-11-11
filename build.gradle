@@ -232,9 +232,11 @@ dependencies {
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    def lwjglNatives = System.getProperty('os.arch').toLowerCase() in ['aarch64', 'arm64']
-            ? 'natives-windows-arm64' : 'natives-windows'
-    ['lwjgl', 'lwjgl-glfw', 'lwjgl-opengl', 'lwjgl-jemalloc', 'lwjgl-stb'].each { module ->
+    def testOs = System.getProperty('os.name').toLowerCase()
+    def nativeOs = testOs.startsWith('windows') ? 'windows' : testOs.startsWith('mac') ? 'macos' : 'linux'
+    def nativeArch = System.getProperty('os.arch').toLowerCase() in ['aarch64', 'arm64'] ? '-arm64' : ''
+    def lwjglNatives = "natives-${nativeOs}${nativeArch}"
+    ['lwjgl', 'lwjgl-glfw', 'lwjgl-jemalloc', 'lwjgl-stb', 'lwjgl-shaderc', 'lwjgl-spvc', 'lwjgl-vma'].each { module ->
         testRuntimeOnly "org.lwjgl:${module}:3.4.1:${lwjglNatives}"
     }
     fabricTestRuntime "net.fabricmc:fabric-loader-junit:${fabricLoaderVersion}"
@@ -242,9 +244,23 @@ dependencies {
 
 // Indigo needs Minecraft registries and Fabric's runtime access transformations.
 // Keep those separate from the plain JVM tests, which inspect untransformed classes.
+def fabricTestGameDir = layout.buildDirectory.dir('fabric-test-game')
+def stageFabricTestBridge = tasks.register('stageFabricTestBridge', Sync) {
+    // Pre-launch loads only the host JNI bridge. The tested JAR may target a
+    // different architecture, and no native Remix renderer runs under JUnit.
+    def windows = System.getProperty('os.name').toLowerCase().startsWith('windows')
+    def hostArch = System.getProperty('os.arch').toLowerCase() in ['aarch64', 'arm64'] ? 'arm64' : 'win64'
+    if (windows) dependsOn hostArch == 'arm64' ? 'compileNativeArm64' : 'compileNativeWin64'
+    onlyIf { windows }
+    from("build/native/${hostArch}") { include 'remixbridge.dll' }
+    from('packaging/remix-vulkan-layer.json')
+    into fabricTestGameDir.map { it.dir('remix-sdk') }
+}
+
 def fabricTest = tasks.register('fabricTest', Test) {
     group = 'verification'
     description = 'Runs renderer integration tests under Fabric Loader.'
+    dependsOn stageFabricTestBridge
     testClassesDirs = sourceSets.test.output.classesDirs
     classpath = sourceSets.test.runtimeClasspath - configurations.testRuntimeClasspath +
             configurations.fabricTestRuntime
@@ -252,6 +268,9 @@ def fabricTest = tasks.register('fabricTest', Test) {
         includeTags 'fabric'
     }
     systemProperty 'fabric.side', 'client'
+    // Fabric invokes the real preLaunch entrypoints under JUnit too.
+    workingDir fabricTestGameDir
+    doFirst { fabricTestGameDir.get().asFile.mkdirs() }
 }
 
 test {
@@ -263,14 +282,14 @@ test {
     systemProperty 'rtxremix.chunk.maxInstalledColumnsPerFrame', '8'
 }
 
-// Opt-in: compiles and executes the actual cloud shader on a local OpenGL device.
+// Opt-in: executes sky compute and frame transfers; a software Vulkan device is sufficient.
 tasks.register('cloudGpuTest', Test) {
     group = 'verification'
-    description = 'Runs offscreen cloud shader integration tests (requires OpenGL 4.4)'
+    description = 'Runs sky and frame-transfer Vulkan integration tests (requires Vulkan 1.2 and push descriptors)'
     dependsOn tasks.named('testClasses')
     testClassesDirs = sourceSets.test.output.classesDirs
     classpath = sourceSets.test.runtimeClasspath
-    include '**/CloudSkyCompositorGpuTest.class'
+    include '**/CloudSkyCompositorGpuTest.class', '**/AtmosphericSkyGpuTest.class', '**/VulkanFrameTransferGpuTest.class'
     useJUnitPlatform()
     systemProperty 'rtxremix.test.cloudGpu', 'true'
 }
@@ -368,6 +387,7 @@ def syncRuntimeSdkTask = tasks.register('syncRuntimeSdk', Sync) {
     from(runtimeBridgeDir) {
         include 'remixbridge.dll', 'remixbridge.pdb'
     }
+    from('packaging/remix-vulkan-layer.json')
     into 'run/remix-sdk'
 }
 
@@ -503,7 +523,9 @@ tasks.register('compileNativeWin64', Exec) {
     commandLine 'cmd', '/c', file('rtxremix-java/native/build_native.bat').absolutePath, 'x64'
     inputs.files file('rtxremix-java/native/build_native.bat'),
                  file('rtxremix-java/native/remixbridge.cpp'),
+                 file('rtxremix-java/native/vulkan_exports.cpp'),
                  file('rtxremix-java/native/include/remix_c.h')
+    inputs.files fileTree('rtxremix-java/native/include') { include '**/*.h' }
     outputs.files file('build/native/win64/remixbridge.dll'),
                   file('build/native/win64/remixbridge.pdb')
 }
@@ -515,9 +537,23 @@ tasks.register('compileNativeArm64', Exec) {
     commandLine 'cmd', '/c', file('rtxremix-java/native/build_native.bat').absolutePath, 'arm64'
     inputs.files file('rtxremix-java/native/build_native.bat'),
                  file('rtxremix-java/native/remixbridge.cpp'),
+                 file('rtxremix-java/native/vulkan_exports.cpp'),
                  file('rtxremix-java/native/include/remix_c.h')
+    inputs.files fileTree('rtxremix-java/native/include') { include '**/*.h' }
     outputs.files file('build/native/arm64/remixbridge.dll'),
                   file('build/native/arm64/remixbridge.pdb')
+}
+
+tasks.register('testNativeVulkan', Exec) {
+    description = 'Tests the Vulkan export layer and the built bridge DLL without a GPU'
+    group = 'verification'
+    dependsOn 'compileNativeWin64'
+    workingDir file('rtxremix-java/native')
+    commandLine 'cmd', '/c', file('rtxremix-java/native/build_native.bat').absolutePath, 'x64', 'test'
+}
+
+if (System.getProperty('os.name').toLowerCase().startsWith('windows')) {
+    tasks.named('check') { dependsOn 'testNativeVulkan' }
 }
 
 jar {
@@ -579,6 +615,9 @@ def packageJarTask = tasks.register('packageJar', Zip) {
             into("native/remix-sdk-win64")
             include "remixbridge.dll", "remixbridge.pdb"
         }
+        from('packaging/remix-vulkan-layer.json') {
+            into('native/remix-sdk-win64')
+        }
     }
     if (buildArches.contains('arm64')) {
         from("remix-runtime/arm64") {
@@ -589,6 +628,9 @@ def packageJarTask = tasks.register('packageJar', Zip) {
         from("build/native/arm64") {
             into("native/remix-sdk-arm64")
             include "remixbridge.dll", "remixbridge.pdb"
+        }
+        from('packaging/remix-vulkan-layer.json') {
+            into('native/remix-sdk-arm64')
         }
     }
 
@@ -634,6 +676,7 @@ def verifyPackageJarTask = tasks.register('verifyPackageJar') {
                 required.add("native/remix-sdk-${arch}/d3d9.dll")
                 required.add("native/remix-sdk-${arch}/remixbridge.dll")
                 required.add("native/remix-sdk-${arch}/remixbridge.pdb")
+                required.add("native/remix-sdk-${arch}/remix-vulkan-layer.json")
             }
             runtimeTextureFiles.each { name ->
                 required.add("native/textures/${name}")

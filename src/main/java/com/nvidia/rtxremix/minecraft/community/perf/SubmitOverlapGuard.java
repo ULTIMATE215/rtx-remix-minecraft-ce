@@ -8,7 +8,7 @@ package com.nvidia.rtxremix.minecraft.community.perf;
  * Self-check for submit overlap, where Submit returns before the runtime has
  * handed the frame to the GPU queue.
  *
- * <p>GL then waits on a Remix-done value whose signal may not be submitted
+ * <p>Minecraft then waits on a Remix-done value whose signal may not be submitted
  * yet, which timeline semaphores allow. What must still hold is that the
  * interop info read right after Submit already describes this frame. The
  * guard learns, from ordinary blocking submits, by how much the Remix-done

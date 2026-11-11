@@ -47,6 +47,7 @@ def installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migration: Moc
         "build/dev/rtx-remix-renderer-9.9-sources.jar": b"sources only",
         "build/libs/rtx-remix-renderer-0.1.jar": b"packaged runtime must not replace the development SDK",
         "packaging/rtx.conf": b"runtime defaults",
+        "packaging/remix-vulkan-layer.json": b"Vulkan layer manifest",
         "packaging/rtx-remix/mods/minecraft-logic/weather/rain.conf": b"shipped rain",
         "remix-runtime/textures/overcast_thunderstorm_bc6u.dds": b"overcast texture",
         "remix-runtime/textures/water_normals_flipbook.dds": b"water normals",
@@ -101,6 +102,7 @@ def test_install_stages_complete_development_payload(installation, capsys, arch)
         "remix-sdk/dxvk.conf": b"runtime config",
         "remix-sdk/usd/plugins/plugin.dll": b"USD plugin",
         "remix-sdk/remixbridge.dll": f"{arch} bridge".encode(),
+        "remix-sdk/remix-vulkan-layer.json": b"Vulkan layer manifest",
         "rtx.conf": b"runtime defaults",
         "rtx-remix/mods/minecraft-logic/weather/rain.conf": b"shipped rain",
         "rtx-remix/mods/custom/zones/castle.conf": b"author zone",
@@ -172,7 +174,7 @@ def test_install_uses_bundled_fabric_api_without_requiring_a_separate_jar(instal
 
 
 @pytest.mark.parametrize("arch", ["win64", "arm64"])
-@pytest.mark.parametrize("missing", ["runtime", "bridge", "mod", "textures", "texture file", "empty texture"])
+@pytest.mark.parametrize("missing", ["runtime", "bridge", "layer", "mod", "textures", "texture file", "empty texture"])
 def test_install_checks_prerequisites_before_changing_game(installation, migration, capsys, arch, missing):
     project, game = installation
     write_file(game / "mods/rtx-remix-renderer.jar", b"previous install")
@@ -180,6 +182,8 @@ def test_install_checks_prerequisites_before_changing_game(installation, migrati
         (project / f"remix-runtime/{arch}/d3d9.dll").unlink()
     elif missing == "bridge":
         (project / f"build/native/{arch}/remixbridge.dll").unlink()
+    elif missing == "layer":
+        (project / "packaging/remix-vulkan-layer.json").unlink()
     elif missing == "textures":
         for texture in (project / "remix-runtime/textures").iterdir():
             texture.unlink()
@@ -206,6 +210,8 @@ def test_install_checks_prerequisites_before_changing_game(installation, migrati
         assert "ERROR: JNI bridge not found" in output
         task = "compileNativeArm64" if arch == "arm64" else "compileNativeWin64"
         assert f"Build it with .\\gradlew.bat {task}." in output
+    elif missing == "layer":
+        assert "ERROR: Vulkan layer manifest not found" in output
     elif missing == "textures":
         assert "ERROR: runtime textures not found" in output
         assert "fetchRuntimeTextures" in output
@@ -294,6 +300,7 @@ def test_install_skips_unchanged_runtime_but_refreshes_bridge_and_payload(instal
     marker = (game / "remix-sdk/.install-marker").read_bytes()
     write_file(game / "remix-sdk/keep-on-skip.dll", b"not recopied")
     write_file(project / "build/native/win64/remixbridge.dll", b"rebuilt bridge")
+    (game / "remix-sdk/remix-vulkan-layer.json").unlink()
     write_file(project / "packaging/rtx.conf", b"updated defaults")
 
     assert run_install(game) == 0
@@ -301,6 +308,7 @@ def test_install_skips_unchanged_runtime_but_refreshes_bridge_and_payload(instal
     assert (game / "remix-sdk/keep-on-skip.dll").read_bytes() == b"not recopied"
     assert (game / "remix-sdk/.install-marker").read_bytes() == marker
     assert (game / "remix-sdk/remixbridge.dll").read_bytes() == b"rebuilt bridge"
+    assert (game / "remix-sdk/remix-vulkan-layer.json").read_bytes() == b"Vulkan layer manifest"
     assert (game / "rtx.conf").read_bytes() == b"updated defaults"
     assert "skipping SDK copy." in capsys.readouterr().out
 

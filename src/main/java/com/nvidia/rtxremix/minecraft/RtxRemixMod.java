@@ -44,7 +44,8 @@ import com.nvidia.rtxremix.minecraft.light.BlockLightRuleManager;
 import com.nvidia.rtxremix.minecraft.input.RemixMouseAccess;
 import com.nvidia.rtxremix.minecraft.input.RemixKeyboardAccess;
 import com.nvidia.rtxremix.minecraft.input.RemixInputGate;
-import com.nvidia.rtxremix.minecraft.gl.TextureOverlay;
+import com.nvidia.rtxremix.minecraft.vulkan.TextureOverlay;
+import com.mojang.blaze3d.textures.GpuTextureView;
 import com.nvidia.rtxremix.minecraft.entity.CopperBeaconBlockEntityRenderer;
 import com.nvidia.rtxremix.minecraft.camera.CameraController;
 import com.nvidia.rtxremix.minecraft.camera.StillShot;
@@ -352,6 +353,7 @@ public class RtxRemixMod implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         instance = this;
+        RemixWeatherRenderer.registerShaders();
         ModelLayerRegistry.registerModelLayer(
                 CopperBeaconBlockEntityRenderer.BODY_MODEL_LAYER,
                 CopperBeaconBlockEntityRenderer::getBodyTexturedModelData);
@@ -695,20 +697,20 @@ public class RtxRemixMod implements ClientModInitializer {
         mod.remixFrameReadyToSubmit = false;
 
         // The submit and blit below run whenever the renderer is initialized,
-        // including while RTX is switched off: they are what signals the VK->GL
-        // and GL->VK semaphores, and skipping them desynchronizes the pair
+        // including while RTX is switched off: they maintain the shared Vulkan
+        // timeline semaphores, and skipping them desynchronizes the pair
         // across an off-to-on transition.
         if (renderer == null || !renderer.isInitialized()) {
             return;
         }
 
         try (ProfileScope callbackScope = ProfileScope.begin("WorldRender.END")) {
-            int remixTexture;
+            GpuTextureView remixTexture;
             try {
                 renderer.renderAndSubmitFrame();
-                remixTexture = renderer.blitVkImageToGL();
+                remixTexture = renderer.copyRemixOutput();
             } catch (RuntimeException e) {
-                // Compositing is skipped, so this frame presents whatever GL drew, which
+                // Compositing is skipped, so this frame presents whatever Minecraft drew, which
                 // with RTX on holds neither terrain nor entities: both are captured for
                 // Remix instead of drawn. The renderer stays enabled because a failure here
                 // is per-frame, and an initialization failure is thrown at startup.
@@ -720,7 +722,7 @@ public class RtxRemixMod implements ClientModInitializer {
                 return;
             }
             mod.frameFailureLogged = false;
-            if (remixTexture > 0 && mod.textureOverlay != null && isRtxEnabled()) {
+            if (remixTexture != null && mod.textureOverlay != null && isRtxEnabled()) {
                 mod.textureOverlay.render(remixTexture);
                 RemixWeatherRenderer weather = renderer.getWeatherRenderer();
                 if (weather != null) {
@@ -2237,11 +2239,12 @@ public class RtxRemixMod implements ClientModInitializer {
             remixAvailable = false;
             if (e.getErrorCode() == ErrorCode.HRESULT_DRIVER_VERSION_BELOW_MINIMUM) {
                 LOGGER.error("NVIDIA driver is below the minimum supported by RTX Remix; closing Minecraft");
-                client.stop();
             }
+            client.stop();
         } catch (Exception e) {
             LOGGER.error("Failed to initialize RTX Remix renderer", e);
             remixAvailable = false;
+            client.stop();
         }
     }
     
@@ -2275,10 +2278,7 @@ public class RtxRemixMod implements ClientModInitializer {
         TracyGCListener.uninstall();
         closeOpenProfileScopes();
         remixFrameReadyToSubmit = false;
-        if (textureOverlay != null) {
-            textureOverlay.shutdown();
-            textureOverlay = null;
-        }
+        textureOverlay = null;
         shutdownRemix();
     }
 
@@ -2439,7 +2439,7 @@ public class RtxRemixMod implements ClientModInitializer {
         }
 
         // Sections built under the opposite mode have geometry in the wrong
-        // place (Remix-only when on, GL-only when off). Rebuild all loaded
+        // place (Remix-only when on, vanilla-only when off). Rebuild all loaded
         // chunks so they pick up the new mode. Must run on the render thread.
         if (client == null) return;
         client.execute(() -> {

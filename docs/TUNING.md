@@ -155,8 +155,8 @@ image, never what is drawn, and each switches live without a restart or a
 terrain rebuild. `/rtx topopt` shows the state and `/rtx topopt ab` measures
 the speedup in game; see the [In-Game Guide](IN_GAME_GUIDE.md#top-optimization).
 
-- **Pipelined Present** (on under the master switch). Before, `Remix.Present`
-  blocked the render thread until GL had signalled that its composite of the
+- **Pipelined Present** (on under the master switch). Blocking `Remix.Present`
+  holds the render thread until Minecraft's Vulkan queue has signalled that its composite of the
   frame was done, which in turn waited for the GPU to finish tracing it, so a
   frame cost the CPU time plus the GPU time. Pipelined, Present passes
   `disableCpuWaitForExternalSemaphores = 1` and returns at once, and the CPU
@@ -164,9 +164,10 @@ the speedup in game; see the [In-Game Guide](IN_GAME_GUIDE.md#top-optimization).
   every present that could meet a reallocated interop image blocking: any open
   screen or Remix menu, frames without a world, and the first four frames after
   a resize, a world change, an interop re-import, a failure, or any change to
-  Top Optimization. Interop imports are replaced only after `glFinish`, and the
-  client-done value Present waits for advances only past a signal GL accepted
-  (`GlInterop`, `ClientDoneTimeline`). Three present or interop failures within
+  Top Optimization. Interop imports are replaced only after client commands
+  are submitted and its graphics queue finishes. The client-done value Present
+  waits for advances only past a submitted signal (`VulkanInterop`,
+  `ClientDoneTimeline`). Three present or interop failures within
   600 frames switch the technique off for the session.
 - **Dry Puddle Cull** (on). Puddle decals have their own terrain pages
   (`ChunkManager.CAT_PUDDLE`). At wetness level 0 their mask is transparent in

@@ -1,11 +1,16 @@
-// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
-// SPDX-License-Identifier: Apache-2.0
+#version 330
 
-#version 150
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
+// SPDX-License-Identifier: Apache-2.0
+//
+// Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
+
+#moj_import <rtx-remix-renderer:weather_parameters.glsl>
 
 uniform sampler2D Sampler0;
+uniform sampler2D RemixDepth;
 uniform sampler2D Sampler1;
-uniform mat4 ProjMat;
 
 in vec2 texCoord;
 in vec4 vertexColor;
@@ -27,6 +32,8 @@ float screenFade(vec2 uv) {
 }
 
 void main() {
+    vec2 screenUv = gl_FragCoord.xy / WeatherViewport.xy;
+    if (gl_FragCoord.z > texture(RemixDepth, screenUv).r) discard;
     vec4 rainTexture = texture(Sampler0, texCoord);
     float coverage = rainTexture.a * vertexColor.a;
     if (coverage <= 0.01) {
@@ -69,13 +76,9 @@ void main() {
     const float AIR_TO_WATER_IOR = 1.0 / 1.333;
     vec3 refractedDirection = refract(incident, lensNormal, AIR_TO_WATER_IOR);
 
-    vec2 framebufferSize = vec2(textureSize(Sampler1, 0));
-    vec2 screenUv = vec2(
-        gl_FragCoord.x / framebufferSize.x,
-        1.0 - gl_FragCoord.y / framebufferSize.y);
+    vec2 framebufferSize = WeatherViewport.xy;
     vec2 angularOffset = projectedUv(refractedDirection)
         - projectedUv(incident);
-    angularOffset.y = -angularOffset.y;
     vec2 offsetPixels = clamp(
         angularOffset * framebufferSize * 0.08,
         vec2(-12.0),
@@ -91,7 +94,6 @@ void main() {
 
     vec3 reflectedDirection = reflect(incident, lensNormal);
     vec2 reflectedUv = projectedUv(reflectedDirection);
-    reflectedUv.y = 1.0 - reflectedUv.y;
     float reflectionValidity = step(reflectedDirection.z, -0.01)
         * screenFade(reflectedUv);
     vec3 reflectedColor = texture(

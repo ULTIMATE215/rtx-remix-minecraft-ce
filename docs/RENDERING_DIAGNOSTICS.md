@@ -148,9 +148,10 @@ after their fences finish; an old image must never publish into the new scene.
 The cloud depth image also lets lightning recompose at frame rate without
 remarching the volume or blending a flash into cloud history.
 
-`gradlew.bat cloudGpuTest -Parch=win64 -x fetchRuntimeTextures` explicitly runs
-offscreen OpenGL 4.4 integration tests for near-cloud disc occlusion, stale
-readbacks, and lightning. Ordinary `test` skips these GPU tests. This does not
+`gradlew.bat cloudGpuTest -Parch=win64` explicitly runs Vulkan 1.2 integration
+tests for physical/legacy atmosphere, near-cloud disc occlusion, stale
+readbacks, and lightning. Software Vulkan is sufficient; the installed Khronos
+validation layer also checks synchronization. Ordinary `test` skips these GPU tests. This does not
 replace a game check: record a fixed pose through day/night time commands,
 near-cloud crossings in first and third person, moonlit cloud drift, lightning,
 and water reflections. Compare haze quality at fixed resolution and DLSS

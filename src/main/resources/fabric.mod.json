@@ -20,7 +20,8 @@
     "entrypoints": {
         "preLaunch": [
             "com.nvidia.rtxremix.minecraft.RtssHookBlock",
-            "com.nvidia.rtxremix.minecraft.WorkerPoolCap"
+            "com.nvidia.rtxremix.minecraft.WorkerPoolCap",
+            "com.nvidia.rtxremix.minecraft.vulkan.VulkanBootstrap"
         ],
         "main": [
             "com.nvidia.rtxremix.minecraft.RtxRemixCommonMod"

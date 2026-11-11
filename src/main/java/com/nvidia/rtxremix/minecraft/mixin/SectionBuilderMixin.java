@@ -47,7 +47,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
  *       capturing, so vanilla skips its layer buffers, matrix stack, and
  *       {@code renderBlock} for geometry that is never drawn.</li>
  *   <li>{@code renderFluid} redirect: emits fluid quads directly,
- *       skipping GL vertex generation.</li>
+ *       skipping vanilla vertex generation.</li>
  *   <li>RETURN inject: finalises the section mesh data and enqueues it
  *       for the render thread.</li>
  * </ul>
@@ -66,7 +66,7 @@ public class SectionBuilderMixin {
      * which means every redirect below would otherwise read it independently and
      * a toggle could land <em>between</em> two of them inside one build, routing
      * some blocks of a section into the Remix emitter and the rest into vanilla's
-     * GL path. Reading one latched value keeps a build wholly in one mode;
+     * vanilla path. Reading one latched value keeps a build wholly in one mode;
      * {@code setRtxEnabled} forces a WorldRenderer.reload(), so sections built
      * in the losing mode are rebuilt immediately afterwards.
      *
@@ -150,7 +150,7 @@ public class SectionBuilderMixin {
                 : BlockQuadEmitter.getRenderTypeCached(state);
     }
 
-    // renderFluid: emit fluid quads for Remix, skip GL
+    // renderFluid: emit fluid quads for Remix, skip vanilla vertices
     @Redirect(method = "compile",
               at = @At(value = "INVOKE",
                        target = "Lnet/minecraft/client/renderer/block/FluidRenderer;tesselate(Lnet/minecraft/client/renderer/block/BlockAndTintGetter;Lnet/minecraft/core/BlockPos;Lnet/minecraft/client/renderer/block/FluidRenderer$Output;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/world/level/material/FluidState;)V"))

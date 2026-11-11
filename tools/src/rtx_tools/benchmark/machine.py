@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 from __future__ import annotations
 
@@ -126,12 +129,9 @@ def benchmark_gpu_from_system(system: Mapping[str, Any], selected_gpu: Mapping[s
     gpu = dict(selected_gpu)
     gpu["Name"] = name
     gpu["AdapterCompatibility"] = str(system.get("gpuVendor") or gpu.get("AdapterCompatibility") or "").strip()
-    gpu["GL_RENDERER"] = name
-    if system.get("gpuVendor"):
-        gpu["GL_VENDOR"] = system["gpuVendor"]
-    if system.get("glVersion"):
-        gpu["GL_VERSION"] = system["glVersion"]
-    gpu["selectionReason"] = "benchmark GL_RENDERER"
+    gpu["graphicsBackend"] = system.get("graphicsBackend") or ("OpenGL" if system.get("glVersion") else "")
+    gpu["graphicsDriver"] = system.get("graphicsDriver") or system.get("glVersion") or ""
+    gpu["selectionReason"] = "benchmark graphics device"
     return gpu
 
 

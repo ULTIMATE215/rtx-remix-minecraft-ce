@@ -1,10 +1,11 @@
+#version 330
+
 // SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 // SPDX-License-Identifier: Apache-2.0
-#version 150
+#moj_import <rtx-remix-renderer:weather_parameters.glsl>
 
 uniform sampler2D Sampler0;
-uniform vec4 FogColor;
-uniform vec4 FogRange;
+uniform sampler2D RemixDepth;
 in vec2 texCoord;
 in vec4 vertexColor;
 in vec2 fogDistance;
@@ -17,6 +18,8 @@ float fogValue(float distance, float start, float end) {
 }
 
 void main() {
+    vec2 screenUv = gl_FragCoord.xy / WeatherViewport.xy;
+    if (gl_FragCoord.z > texture(RemixDepth, screenUv).r) discard;
     vec4 color = texture(Sampler0, texCoord) * vertexColor;
     if (color.a < 0.1) discard;
     float fog = max(fogValue(fogDistance.x, FogRange.x, FogRange.y),

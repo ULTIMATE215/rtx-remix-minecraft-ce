@@ -13,6 +13,17 @@ locations given.
 - License: Apache License, Version 2.0 (see [LICENSE](LICENSE))
 - Source: https://github.com/gradle/gradle
 
+## Vulkan headers
+
+The unmodified C headers under `rtxremix-java/native/include/vulkan/` and
+`rtxremix-java/native/include/vk_video/` are from Khronos Vulkan-Headers
+v1.4.341, copyright The Khronos Group Inc., licensed under Apache-2.0.
+They declare the Vulkan layer ABI used by `remixbridge.dll`.
+Source: https://github.com/KhronosGroup/Vulkan-Headers/tree/v1.4.341
+
+- [packaging/licenses/Vulkan-Headers-LICENSE.md](packaging/licenses/Vulkan-Headers-LICENSE.md)
+  contains the upstream notice and full Apache License, Version 2.0 text.
+
 ## Fabric Java dependency
 
 The Fabric JAR bundles Fabric API at the version pinned by `fabric_api_version`

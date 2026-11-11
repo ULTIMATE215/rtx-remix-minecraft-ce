@@ -653,10 +653,11 @@ launcher, tags, outcome, run counts, artifact links) and `aggregate.json`
 (cross-run profile data). Its `launcher` is `prism`: the runs went through
 this checkout's dedicated Prism instance.
 `machine.selectedGpu.DriverVersion` uses the WMI driver version notation;
-`machine.benchmarkGpu.GL_VERSION` is the client's GL driver string and is
-available only when a result supplied it. `machine.gpus` inventories adapters.
-Read the actual OpenGL renderer as well as the selected adapter on multi-GPU
-machines.
+`machine.benchmarkGpu.graphicsBackend` and `graphicsDriver` identify the
+client's graphics backend and its driver. Historical results containing
+`glVersion` remain readable. `machine.gpus` inventories adapters. Compare the
+client's GPU with the selected adapter on multi-GPU machines; Vulkan interop
+requires Minecraft and Remix to use the same physical device and driver.
 
 A valid result can count as completed even if the client then crashes during
 teardown. `outcome.status` may remain `passed`; inspect
@@ -990,9 +991,10 @@ the harness's Java-focused watchdog snapshots. Like the crash dumps, that dump
 holds your Minecraft session; do not share it publicly. See
 [Development clients](LAUNCHER.md#development-clients) for safe PID selection.
 
-Classify the faulting module and operation before assigning blame. A stack in
-the OpenGL driver under `TextureOverlay.renderTextureOverlay` identifies the
-GL draw in flight, not proof that the overlay supplied bad data. Likewise a
+Classify the faulting module and operation before assigning blame. A driver
+stack under `VulkanInterop.copyFromMinecraft` identifies the transfer being
+recorded, but GPU execution is asynchronous and the fault may originate in an
+earlier submission. Likewise a
 native heap abort just after NRC initialization is a runtime-side clue, not
 proof that mod code is innocent. Compare same-host pre-change runs and loaded
 runtime/driver identities, including the SDK pin in

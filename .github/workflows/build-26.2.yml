@@ -16,6 +16,22 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  check:
+    if: github.ref == 'refs/heads/mc/26.2'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.0"
+          enable-cache: false
+      - name: Check tooling and public boundary
+        run: '& "$env:GITHUB_WORKSPACE\tools\rtx.bat" check --tests'
+
   package:
     if: github.ref == 'refs/heads/mc/26.2'
     runs-on: windows-latest
@@ -44,7 +60,11 @@ jobs:
 
       - name: Build installable Windows x64 JAR
         shell: pwsh
-        run: .\gradlew.bat build -Prelease -Parch=win64 -x test --no-daemon --stacktrace
+        run: .\gradlew.bat build -Prelease -Parch=win64 --no-daemon --stacktrace
+
+      - name: Verify Windows ARM64 bridge and packaging
+        shell: pwsh
+        run: .\gradlew.bat package -Prelease -Parch=arm64 --no-daemon --stacktrace
 
       - name: Upload installable JAR
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

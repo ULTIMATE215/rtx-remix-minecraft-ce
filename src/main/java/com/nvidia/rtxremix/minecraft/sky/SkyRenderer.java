@@ -1355,7 +1355,7 @@ public class SkyRenderer {
      * so a band needs a buffer that starts at the band: a slice. Slicing allocates, and the
      * compositor hands back the same few mapped buffers for its whole life, so each buffer's
      * views are built the first time it is seen and reused after; the frame path allocates
-     * nothing once every ring slot has been seen. Pure bookkeeping, no Remix or GL calls.
+     * nothing once every ring slot has been seen. Pure bookkeeping, no Remix or Vulkan calls.
      */
     static final class DomeBandScan {
         static final int BANDS = 4;
@@ -1518,7 +1518,7 @@ public class SkyRenderer {
     //  Cleanup
     // ====================================================================
 
-    /** Releases world-scoped Remix assets while preserving reusable atmospheric GL state. */
+    /** Releases world-scoped Remix assets while preserving reusable atmospheric Vulkan resources. */
     public void cleanup() {
         destroyCelestialAssets();
         releaseSkyLights();
@@ -1542,6 +1542,7 @@ public class SkyRenderer {
      * next frame publishes them from scratch for whatever sky the current world has.
      */
     private void releaseSkyLights() {
+        atmosphericGenerator.invalidate();
         destroyAsset(skyDomeLightAsset);
         skyDomeLightAsset = null;
         destroyAsset(skyTextureAsset);
@@ -1567,7 +1568,7 @@ public class SkyRenderer {
         atmosphericMeanB = 0.0f;
     }
 
-    /** Releases world assets and process-lifetime atmospheric GL resources. */
+    /** Releases world assets and process-lifetime atmospheric Vulkan resources. */
     public void shutdown() {
         try {
             cleanup();

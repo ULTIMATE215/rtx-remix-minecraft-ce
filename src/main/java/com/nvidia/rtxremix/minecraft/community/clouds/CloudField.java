@@ -191,7 +191,7 @@ public final class CloudField {
     }
 
     // ------------------------------------------------------------------
-    //  Texture sampling, GL_LINEAR + GL_REPEAT conventions
+    //  Texture sampling, linear filtering with repeat addressing
     // ------------------------------------------------------------------
 
     static void sample2D(byte[] texture, int size, double u, double v, float[] out) {

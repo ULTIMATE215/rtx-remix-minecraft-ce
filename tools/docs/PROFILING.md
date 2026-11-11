@@ -303,14 +303,14 @@ CPU work from a Vulkan/interop wait inside that call. `Submit` in
 zones, GPU evidence, and thread stacks to divide it. A breakdown from another
 GPU or architecture does not apply to a JFR-only run.
 
-`AtmosphericSkyGenerator.consumeCompletedReadback` polls an old GL fence with
-`glClientWaitSync(..., 0, 0L)`. A long
-`Sky.ProceduralGeneration.Readback` span can therefore be driver synchronization
-paid at that API call rather than sky computation. Check surrounding
-`Interop.VKToGL`, `Interop.GLToVK`, `Remix.Present`, and
+`AtmosphericSkyGenerator.consumeCompletedReadback` polls an earlier Vulkan
+submission before reading its staging buffer. A long
+`Sky.ProceduralGeneration.Readback` span includes completion checks and the
+pixel copy, rather than timing the compute shader alone. Check surrounding
+`Interop.RemixToMinecraft`, `Interop.MinecraftToRemix`, `Remix.Present`, and
 `MinecraftClient.render.swapBuffers` spans; moving a sync point can relabel
-the same wait without removing it. `RenderSystemMixin` defines the current
-swap/present redirection. Turning the sky off also removes its dome light and
+the same wait without removing it. `RemixVulkanSurface` owns the surface
+handoff and presentation. Turning the sky off also removes its dome light and
 changes GPU lighting work, so it is not a CPU-only control.
 
 Tracy's CPU-usage lane is machine-wide. For process contamination, inspect
@@ -332,23 +332,24 @@ exits, not while the next arm records.
 GPU memory views intentionally count different things:
 
 - The runtime developer menu's Video Memory Usage uses device-local heap
-  budget/usage accounting. On Windows this can include Minecraft's OpenGL
-  driver allocations as well as Remix resources.
+  budget/usage accounting. On Windows this can include allocations from
+  Minecraft's Vulkan device as well as Remix resources.
 - The runtime memory profiler tracks its own resource categories. For builds
   supporting `rtx.profiler.memory.enable = True`, enable it before launch and
   choose **Write to Log** in the memory profiler panel to emit the
   `GPU Memory Profiler Log` block; it is not automatically a periodic log.
-- `GL_GPU_MEMORY_INFO_CURRENT_AVAILABLE_VIDMEM_NVX` (`0x9049`) is the GL view
-  when `GL_NVX_gpu_memory_info` is available, not a portable total of all GPU
-  allocations.
+- Vulkan heap budget counters are driver estimates, not per-subsystem
+  accounting. Minecraft and Remix use separate logical devices and share
+  exported allocations, so do not sum their heap usage readings.
 
 The selected runtime's `dxvk_imgui.cpp` and `dxvk_memory_tracker.cpp` are the
 authorities for those counters and controls. Growth in the heap readout with
 flat tracked Remix resources suggests allocations outside that profiler;
-correlate it with GL work rather than declaring the owner from one graph.
-`DynamicBufferUpload` documents a known GL buffer-orphaning mechanism and the
-reuse policy that prevents it. Growth that scales with draw calls/frame rate,
-especially with the debug chart open, warrants checking that path again.
+correlate it with Minecraft's Vulkan resources rather than declaring the
+owner from one graph. Check encoder completion and deferred resource
+destruction when growth scales with draw calls or frame rate. Atmosphere and
+cloud staging buffers are bounded rings whose slots cannot be reused before
+their submissions complete.
 
 Java RSS growth is a separate question. Use `jfr_gc --heap --rss` and a
 controlled `jcmd <pid> GC.run` outside measured runs to compare the live set

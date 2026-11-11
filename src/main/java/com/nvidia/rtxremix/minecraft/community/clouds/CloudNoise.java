@@ -23,7 +23,7 @@ import java.util.stream.IntStream;
  * </ul>
  *
  * <p>Layout is x fastest, then y, then z, four bytes per texel, which is what
- * {@code glTexImage3D} and {@code glTexImage2D} expect with {@code GL_RGBA}/{@code GL_UNSIGNED_BYTE}.
+ * Vulkan RGBA8 images expect for tightly packed texels.
  */
 public final class CloudNoise {
 

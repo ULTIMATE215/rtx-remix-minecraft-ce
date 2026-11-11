@@ -7,19 +7,10 @@ package com.nvidia.rtxremix.minecraft.community.clouds;
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
 import com.nvidia.rtxremix.minecraft.community.LightningFlash;
 import org.lwjgl.BufferUtils;
-import org.lwjgl.opengl.GL;
-import org.lwjgl.opengl.GL11;
-import org.lwjgl.opengl.GL12;
-import org.lwjgl.opengl.GL13;
-import org.lwjgl.opengl.GL15;
-import org.lwjgl.opengl.GL20;
-import org.lwjgl.opengl.GL21;
-import org.lwjgl.opengl.GL30;
-import org.lwjgl.opengl.GL31;
-import org.lwjgl.opengl.GL32;
-import org.lwjgl.opengl.GL42;
-import org.lwjgl.opengl.GL43;
-import org.lwjgl.opengl.GL44;
+import com.mojang.blaze3d.buffers.GpuFence;
+import com.nvidia.rtxremix.minecraft.vulkan.VulkanImage;
+import com.nvidia.rtxremix.minecraft.vulkan.VulkanWork;
+import org.lwjgl.vulkan.VkCommandBuffer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -39,8 +30,8 @@ import java.nio.charset.StandardCharsets;
  * across frames: it stays held, out of the readback ring's rotation, until the caller releases
  * it or takes a newer one, so the sky can upload a large dome a band per frame.
  *
- * <p>Render thread only, with the GL context current. Texture units 16–22 and image units 0–3
- * are bound only during an update and released afterwards; vanilla tracks units 0–11 only.
+ * <p>Render thread only. Compute, texture uploads and readbacks use Minecraft's Vulkan
+ * encoder, with command-local descriptors and deferred destruction after GPU completion.
  */
 public final class CloudSkyCompositor {
 
@@ -50,15 +41,6 @@ public final class CloudSkyCompositor {
     private static final int PASS_REDUCE = 2;
     /** Readback buffers in flight or held; the sky sizes its per-buffer band view cache by this. */
     public static final int READBACK_RING_SIZE = 3;
-    private static final int UNIT_OCCUPANCY = 6;
-    private static final int UNIT_ATMOSPHERE = 8;
-    private static final int UNIT_TRANSMITTANCE = 9;
-    private static final int UNIT_BASE = 10;
-    private static final int UNIT_DETAIL = 11;
-    private static final int UNIT_WEATHER = 12;
-    /** GL texture units the samplers above are remapped to, clear of vanilla's 0–11 and the atmosphere's 13–15. */
-    private static final int GL_UNIT_OFFSET = 10;
-    private static final int UBO_BINDING = 1;
     private static final int UBO_BYTES = 12 * 4 * Float.BYTES;
 
     /** Cloud extinction per block at density 1: a dense cumulus core, about 15 m visibility. */
@@ -77,26 +59,15 @@ public final class CloudSkyCompositor {
     private final int readbackBytes;
     private final VolumetricClouds.Quality quality;
 
-    private int program;
-    private int passLocation;
-    private int cloudLayer;
-    private int cloudDepth;
-    private int finalSky;
-    private int partial;
-    private int baseNoise;
-    private int detailNoise;
-    private int weatherMap;
-    private int occupancyTexture;
-    private int parametersBuffer;
+    private final VulkanWork work;
+    private final CloudSkyResources resources;
+    private boolean closed;
     private final ByteBuffer parameters = BufferUtils.createByteBuffer(UBO_BYTES);
     private final ByteBuffer occupancyUpload =
             BufferUtils.createByteBuffer(VolumetricClouds.OCCUPANCY_SIZE * VolumetricClouds.OCCUPANCY_SIZE);
     private int uploadedOccupancyVersion = -1;
-    private boolean noiseUploaded;
 
-    private final int[] readbackBuffers = new int[READBACK_RING_SIZE];
-    private final ByteBuffer[] mappedReadbacks = new ByteBuffer[READBACK_RING_SIZE];
-    private final long[] readbackFences = new long[READBACK_RING_SIZE];
+    private final GpuFence[] readbackFences = new GpuFence[READBACK_RING_SIZE];
     private final long[] readbackGenerations = new long[READBACK_RING_SIZE];
     private long generation;
     private final ReadbackRing readbackRing = new ReadbackRing(READBACK_RING_SIZE);
@@ -184,39 +155,18 @@ public final class CloudSkyCompositor {
     }
 
     public CloudSkyCompositor(VolumetricClouds.Quality quality, int atmosphereWidth, int atmosphereHeight) {
-        if (!GL.getCapabilities().OpenGL44) {
-            throw new IllegalStateException("Volumetric clouds require OpenGL 4.4");
-        }
+        this(VulkanWork.minecraft(), quality, atmosphereWidth, atmosphereHeight);
+    }
+
+    CloudSkyCompositor(VulkanWork work, VolumetricClouds.Quality quality, int atmosphereWidth, int atmosphereHeight) {
+        this.work = work;
         this.quality = quality;
         width = quality.domeWidth();
         height = quality.domeHeight();
         upperHeight = height / 2;
         outputBytes = width * height * 4 * Short.BYTES;
         readbackBytes = width * (height + 1) * 4 * Short.BYTES;
-        try {
-            program = createProgram(loadShaderSource(atmosphereWidth, atmosphereHeight));
-            passLocation = GL20.glGetUniformLocation(program, "Pass");
-            if (passLocation < 0) {
-                throw new IllegalStateException("Cloud sky shader is missing uniform Pass");
-            }
-            bindSamplerUnits();
-            cloudLayer = createTexture2D(width, height, GL30.GL_RGBA16F, GL11.GL_NEAREST, GL12.GL_CLAMP_TO_EDGE);
-            cloudDepth = createTexture2D(width, height, GL30.GL_R32F, GL11.GL_NEAREST, GL12.GL_CLAMP_TO_EDGE);
-            finalSky = createTexture2D(width, height + 1, GL30.GL_RGBA16F, GL11.GL_NEAREST, GL12.GL_CLAMP_TO_EDGE);
-            partial = createTexture2D((width + 7) / 8, (upperHeight + 7) / 8, GL30.GL_RGBA32F,
-                    GL11.GL_NEAREST, GL12.GL_CLAMP_TO_EDGE);
-            occupancyTexture = createTexture2D(VolumetricClouds.OCCUPANCY_SIZE, VolumetricClouds.OCCUPANCY_SIZE,
-                    GL30.GL_R8, GL11.GL_NEAREST, GL12.GL_CLAMP_TO_EDGE);
-            parametersBuffer = GL15.glGenBuffers();
-            GL15.glBindBuffer(GL31.GL_UNIFORM_BUFFER, parametersBuffer);
-            GL15.glBufferData(GL31.GL_UNIFORM_BUFFER, UBO_BYTES, GL15.GL_DYNAMIC_DRAW);
-            GL15.glBindBuffer(GL31.GL_UNIFORM_BUFFER, 0);
-            createReadbackBuffers();
-            checkGlError("initialize volumetric cloud compositor");
-        } catch (RuntimeException e) {
-            destroy();
-            throw e;
-        }
+        resources = new CloudSkyResources(work, loadShaderSource(atmosphereWidth, atmosphereHeight), width, height);
     }
 
     public int width() { return width; }
@@ -237,7 +187,8 @@ public final class CloudSkyCompositor {
      *         discarded, which {@link #holdsReadback()} reports. That is what lets the sky upload
      *         it a band per frame across several frames.
      */
-    public ByteBuffer update(int atmosphereTexture, int transmittanceLut, Inputs inputs, float[] upperMean) {
+    public ByteBuffer update(VulkanImage atmosphereTexture, VulkanImage transmittanceLut, Inputs inputs, float[] upperMean) {
+        if (closed) throw new IllegalStateException("Cloud sky compositor is closed");
         CloudNoise noise = CloudNoise.sharedIfReady();
         if (noise == null) {
             return null;
@@ -311,71 +262,23 @@ public final class CloudSkyCompositor {
      * @param reset whether the history is invalid, which also restarts the checkerboard
      * @param full whether to march every texel without history, as for a moving camera
      */
-    private void dispatch(CloudNoise noise, int atmosphereTexture, int transmittanceLut,
+    private void dispatch(CloudNoise noise, VulkanImage atmosphereTexture, VulkanImage transmittanceLut,
                           Inputs inputs, double worldTime, boolean reset, boolean full, boolean march) {
-        // Restore the exact GL program afterwards. ShaderProgram.bind() skips glUseProgram when
-        // vanilla's cache already names that program, which would leave this compute program
-        // bound under vanilla's uniform uploads and draws: GL errors and a frame presented
-        // without the Remix image, a full-screen flash of the raster sky.
-        int previousProgram = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
         try (ProfileScope ignored = ProfileScope.begin("Cloud.Dome.Dispatch")) {
-            if (!noiseUploaded) {
-                uploadNoise(noise);
-            }
-            uploadOccupancyIfChanged();
+            VkCommandBuffer commands = work.begin();
             int phase = full ? -1 : checkerPhase;
             fillParameters(inputs, worldTime, phase, full ? 1.0f : HISTORY_BLEND);
-
-            // The atmosphere panorama and LUT were written as images; this program fetches them
-            // as textures.
-            GL42.glMemoryBarrier(GL42.GL_TEXTURE_FETCH_BARRIER_BIT);
-            GL20.glUseProgram(program);
-            bindTexture(UNIT_OCCUPANCY, GL11.GL_TEXTURE_2D, occupancyTexture);
-            bindTexture(UNIT_ATMOSPHERE, GL11.GL_TEXTURE_2D, atmosphereTexture);
-            bindTexture(UNIT_TRANSMITTANCE, GL11.GL_TEXTURE_2D, transmittanceLut);
-            bindTexture(UNIT_BASE, GL12.GL_TEXTURE_3D, baseNoise);
-            bindTexture(UNIT_DETAIL, GL12.GL_TEXTURE_3D, detailNoise);
-            bindTexture(UNIT_WEATHER, GL11.GL_TEXTURE_2D, weatherMap);
-            GL13.glActiveTexture(GL13.GL_TEXTURE0);
-            GL42.glBindImageTexture(0, cloudLayer, 0, false, 0, GL15.GL_READ_WRITE, GL30.GL_RGBA16F);
-            GL42.glBindImageTexture(1, finalSky, 0, false, 0, GL15.GL_READ_WRITE, GL30.GL_RGBA16F);
-            GL42.glBindImageTexture(2, partial, 0, false, 0, GL15.GL_READ_WRITE, GL30.GL_RGBA32F);
-            GL42.glBindImageTexture(3, cloudDepth, 0, false, 0, GL15.GL_READ_WRITE, GL30.GL_R32F);
-            parameters.position(0).limit(UBO_BYTES);
-            GL15.glBindBuffer(GL31.GL_UNIFORM_BUFFER, parametersBuffer);
-            GL15.glBufferSubData(GL31.GL_UNIFORM_BUFFER, 0L, parameters);
-            GL30.glBindBufferBase(GL31.GL_UNIFORM_BUFFER, UBO_BINDING, parametersBuffer);
-
+            resources.prepare(commands, noise, atmosphereTexture, transmittanceLut, parameters);
+            uploadOccupancyIfChanged(commands);
             if (march) {
-                GL20.glUniform1i(passLocation, PASS_CLOUD);
-                if (phase < 0) {
-                    GL43.glDispatchCompute(divideRoundUp(width, 8), divideRoundUp(height, 8), 1);
-                } else {
-                    GL43.glDispatchCompute(divideRoundUp((width + 1) / 2, 8), divideRoundUp((height + 1) / 2, 8), 1);
-                }
-                GL42.glMemoryBarrier(GL42.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+                resources.dispatch(commands, PASS_CLOUD,
+                        divideRoundUp(phase < 0 ? width : (width + 1) / 2, 8),
+                        divideRoundUp(phase < 0 ? height : (height + 1) / 2, 8));
             }
-            GL20.glUniform1i(passLocation, PASS_COMPOSE);
-            GL43.glDispatchCompute(divideRoundUp(width, 8), divideRoundUp(height, 8), 1);
-            GL42.glMemoryBarrier(GL42.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-            GL20.glUniform1i(passLocation, PASS_REDUCE);
-            GL43.glDispatchCompute(1, 1, 1);
-            GL42.glMemoryBarrier(GL42.GL_SHADER_IMAGE_ACCESS_BARRIER_BIT
-                    | GL42.GL_TEXTURE_UPDATE_BARRIER_BIT | GL42.GL_PIXEL_BUFFER_BARRIER_BIT);
+            resources.dispatch(commands, PASS_COMPOSE, divideRoundUp(width, 8), divideRoundUp(height, 8));
+            resources.dispatch(commands, PASS_REDUCE, 1, 1);
+            work.execute(commands);
             enqueueReadback();
-        } finally {
-            for (int unit = 0; unit <= 3; unit++) {
-                GL42.glBindImageTexture(unit, 0, 0, false, 0, GL15.GL_READ_WRITE, GL30.GL_RGBA16F);
-            }
-            for (int unit : new int[]{UNIT_OCCUPANCY, UNIT_ATMOSPHERE, UNIT_TRANSMITTANCE, UNIT_WEATHER}) {
-                bindTexture(unit, GL11.GL_TEXTURE_2D, 0);
-            }
-            bindTexture(UNIT_BASE, GL12.GL_TEXTURE_3D, 0);
-            bindTexture(UNIT_DETAIL, GL12.GL_TEXTURE_3D, 0);
-            GL13.glActiveTexture(GL13.GL_TEXTURE0);
-            GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, 0);
-            GL15.glBindBuffer(GL31.GL_UNIFORM_BUFFER, 0);
-            GL20.glUseProgram(previousProgram);
         }
         if (march) {
             checkerPhase = reset ? 0 : (checkerPhase + 1) & 3;
@@ -426,73 +329,23 @@ public final class CloudSkyCompositor {
         parameters.putFloat(offset + 12, w);
     }
 
-    private void uploadNoise(CloudNoise noise) {
-        try (ProfileScope ignored = ProfileScope.begin("Cloud.Dome.NoiseUpload")) {
-            baseNoise = createTexture3D(CloudNoise.BASE_SIZE, noise.base);
-            detailNoise = createTexture3D(CloudNoise.DETAIL_SIZE, noise.detail);
-            weatherMap = createTexture2D(CloudNoise.WEATHER_SIZE, CloudNoise.WEATHER_SIZE, GL11.GL_RGBA8,
-                    GL11.GL_LINEAR, GL11.GL_REPEAT);
-            ByteBuffer pixels = BufferUtils.createByteBuffer(noise.weather.length);
-            pixels.put(noise.weather).flip();
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, weatherMap);
-            GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 1);
-            GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0, CloudNoise.WEATHER_SIZE, CloudNoise.WEATHER_SIZE,
-                    GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, pixels);
-            GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 4);
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, 0);
-            noiseUploaded = true;
-        }
-    }
-
-    private void uploadOccupancyIfChanged() {
+    private void uploadOccupancyIfChanged(VkCommandBuffer commands) {
         int version = VolumetricClouds.occupancyVersion();
-        if (version == uploadedOccupancyVersion) {
-            return;
-        }
+        if (version == uploadedOccupancyVersion) return;
         occupancyUpload.clear();
         occupancyUpload.put(VolumetricClouds.occupancy()).flip();
-        int previous = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, occupancyTexture);
-        GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 1);
-        GL11.glTexSubImage2D(GL11.GL_TEXTURE_2D, 0, 0, 0,
-                VolumetricClouds.OCCUPANCY_SIZE, VolumetricClouds.OCCUPANCY_SIZE,
-                GL11.GL_RED, GL11.GL_UNSIGNED_BYTE, occupancyUpload);
-        GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 4);
-        GL11.glBindTexture(GL11.GL_TEXTURE_2D, previous);
+        resources.uploadOccupancy(commands, occupancyUpload);
         uploadedOccupancyVersion = version;
     }
 
-    // ------------------------------------------------------------------
-    //  Readback
-    // ------------------------------------------------------------------
-
-    private void createReadbackBuffers() {
-        for (int index = 0; index < READBACK_RING_SIZE; index++) {
-            int buffer = GL15.glGenBuffers();
-            readbackBuffers[index] = buffer;
-            GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, buffer);
-            int flags = GL30.GL_MAP_READ_BIT | GL44.GL_MAP_PERSISTENT_BIT | GL44.GL_MAP_COHERENT_BIT;
-            GL44.glBufferStorage(GL21.GL_PIXEL_PACK_BUFFER, readbackBytes, flags);
-            ByteBuffer mapped = GL30.glMapBufferRange(GL21.GL_PIXEL_PACK_BUFFER, 0L, readbackBytes, flags, null);
-            if (mapped == null) {
-                throw new IllegalStateException("Failed to map the volumetric cloud readback");
-            }
-            mappedReadbacks[index] = mapped;
-        }
-        GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, 0);
-    }
-
     private void enqueueReadback() {
-        // A full ring, counting the slot the sky is still uploading from, skips the readback
-        // rather than writing into memory a band upload may read this frame or the next.
-        if (!readbackRing.canEnqueue()) {
-            return;
-        }
+        // A slot held for band uploads is never overwritten, even across scene invalidation.
+        if (!readbackRing.canEnqueue()) return;
         int index = readbackRing.writeIndex();
-        GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, readbackBuffers[index]);
-        bindTexture(UNIT_ATMOSPHERE, GL11.GL_TEXTURE_2D, finalSky);
-        GL11.glGetTexImage(GL11.GL_TEXTURE_2D, 0, GL11.GL_RGBA, GL30.GL_HALF_FLOAT, 0L);
-        readbackFences[index] = GL32.glFenceSync(GL32.GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        VkCommandBuffer commands = work.begin();
+        resources.finalSky().copyTo(commands, resources.readbacks[index]);
+        work.execute(commands);
+        readbackFences[index] = work.fence();
         readbackGenerations[index] = generation;
         readbackRing.enqueued();
     }
@@ -500,20 +353,19 @@ public final class CloudSkyCompositor {
     private ByteBuffer consumeCompletedReadback(float[] upperMean) {
         while (readbackRing.pending() > 0) {
             int index = readbackRing.oldestPending();
-            long fence = readbackFences[index];
-            int status = GL32.glClientWaitSync(fence, 0, 0L);
-            if (status != GL32.GL_ALREADY_SIGNALED && status != GL32.GL_CONDITION_SATISFIED) {
+            GpuFence fence = readbackFences[index];
+            if (!fence.awaitCompletion(0)) {
                 return null;
             }
-            GL32.glDeleteSync(fence);
-            readbackFences[index] = 0L;
+            fence.close();
+            readbackFences[index] = null;
             // Keep in-flight buffers fenced until completion, but never publish an older scene.
             // The returned slot becomes the held one, releasing any slot held before it: the
             // reader switches to the newer image in the same frame.
             boolean current = readbackGenerations[index] == generation;
             readbackRing.consumeOldest(current);
             if (current) {
-                return decodeReadback(mappedReadbacks[index], upperMean);
+                return decodeReadback(resources.readbacks[index].read(), upperMean);
             }
         }
         return null;
@@ -547,75 +399,6 @@ public final class CloudSkyCompositor {
         return Float.float16ToFloat(buffer.getShort(offset));
     }
 
-    // ------------------------------------------------------------------
-    //  GL helpers
-    // ------------------------------------------------------------------
-
-    private void bindSamplerUnits() {
-        int previous = GL11.glGetInteger(GL20.GL_CURRENT_PROGRAM);
-        try {
-            GL20.glUseProgram(program);
-            setSampler("Occupancy", UNIT_OCCUPANCY);
-            setSampler("AtmosphereSky", UNIT_ATMOSPHERE);
-            setSampler("TransmittanceLut", UNIT_TRANSMITTANCE);
-            setSampler("BaseNoise", UNIT_BASE);
-            setSampler("DetailNoise", UNIT_DETAIL);
-            setSampler("WeatherMap", UNIT_WEATHER);
-        } finally {
-            GL20.glUseProgram(previous);
-        }
-    }
-
-    private void setSampler(String name, int unit) {
-        int location = GL20.glGetUniformLocation(program, name);
-        if (location >= 0) {
-            GL20.glUniform1i(location, unit + GL_UNIT_OFFSET);
-        }
-    }
-
-    private static void bindTexture(int unit, int target, int texture) {
-        GL13.glActiveTexture(GL13.GL_TEXTURE0 + unit + GL_UNIT_OFFSET);
-        GL11.glBindTexture(target, texture);
-    }
-
-    private static int createTexture2D(int width, int height, int internalFormat, int filter, int wrap) {
-        int previous = GL11.glGetInteger(GL11.GL_TEXTURE_BINDING_2D);
-        int texture = GL11.glGenTextures();
-        try {
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, texture);
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MIN_FILTER, filter);
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_MAG_FILTER, filter);
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_S, wrap);
-            GL11.glTexParameteri(GL11.GL_TEXTURE_2D, GL11.GL_TEXTURE_WRAP_T, wrap);
-            GL42.glTexStorage2D(GL11.GL_TEXTURE_2D, 1, internalFormat, width, height);
-        } finally {
-            GL11.glBindTexture(GL11.GL_TEXTURE_2D, previous);
-        }
-        return texture;
-    }
-
-    private static int createTexture3D(int size, byte[] data) {
-        int previous = GL11.glGetInteger(GL12.GL_TEXTURE_BINDING_3D);
-        int texture = GL11.glGenTextures();
-        ByteBuffer pixels = BufferUtils.createByteBuffer(data.length);
-        pixels.put(data).flip();
-        try {
-            GL11.glBindTexture(GL12.GL_TEXTURE_3D, texture);
-            GL11.glTexParameteri(GL12.GL_TEXTURE_3D, GL11.GL_TEXTURE_MIN_FILTER, GL11.GL_LINEAR);
-            GL11.glTexParameteri(GL12.GL_TEXTURE_3D, GL11.GL_TEXTURE_MAG_FILTER, GL11.GL_LINEAR);
-            GL11.glTexParameteri(GL12.GL_TEXTURE_3D, GL11.GL_TEXTURE_WRAP_S, GL11.GL_REPEAT);
-            GL11.glTexParameteri(GL12.GL_TEXTURE_3D, GL11.GL_TEXTURE_WRAP_T, GL11.GL_REPEAT);
-            GL11.glTexParameteri(GL12.GL_TEXTURE_3D, GL12.GL_TEXTURE_WRAP_R, GL11.GL_REPEAT);
-            GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 1);
-            GL12.glTexImage3D(GL12.GL_TEXTURE_3D, 0, GL11.GL_RGBA8, size, size, size, 0,
-                    GL11.GL_RGBA, GL11.GL_UNSIGNED_BYTE, pixels);
-            GL11.glPixelStorei(GL11.GL_UNPACK_ALIGNMENT, 4);
-        } finally {
-            GL11.glBindTexture(GL12.GL_TEXTURE_3D, previous);
-        }
-        return texture;
-    }
-
     private String loadShaderSource(int atmosphereWidth, int atmosphereHeight) {
         try (InputStream stream = CloudSkyCompositor.class.getResourceAsStream(SHADER_RESOURCE)) {
             if (stream == null) {
@@ -639,63 +422,15 @@ public final class CloudSkyCompositor {
         }
     }
 
-    private static int createProgram(String source) {
-        int shader = GL20.glCreateShader(GL43.GL_COMPUTE_SHADER);
-        GL20.glShaderSource(shader, source);
-        GL20.glCompileShader(shader);
-        if (GL20.glGetShaderi(shader, GL20.GL_COMPILE_STATUS) == GL11.GL_FALSE) {
-            String log = GL20.glGetShaderInfoLog(shader);
-            GL20.glDeleteShader(shader);
-            throw new IllegalStateException("Failed to compile cloud sky shader: " + log);
-        }
-        int linked = GL20.glCreateProgram();
-        try {
-            GL20.glAttachShader(linked, shader);
-            GL20.glLinkProgram(linked);
-            if (GL20.glGetProgrami(linked, GL20.GL_LINK_STATUS) == GL11.GL_FALSE) {
-                String log = GL20.glGetProgramInfoLog(linked);
-                GL20.glDeleteProgram(linked);
-                throw new IllegalStateException("Failed to link cloud sky shader: " + log);
-            }
-            return linked;
-        } finally {
-            GL20.glDeleteShader(shader);
-        }
-    }
-
     public void destroy() {
+        if (closed) return;
+        closed = true;
         for (int index = 0; index < READBACK_RING_SIZE; index++) {
-            if (readbackFences[index] != 0L) {
-                GL32.glDeleteSync(readbackFences[index]);
-                readbackFences[index] = 0L;
-            }
-            if (readbackBuffers[index] != 0) {
-                GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, readbackBuffers[index]);
-                GL15.glUnmapBuffer(GL21.GL_PIXEL_PACK_BUFFER);
-                GL15.glDeleteBuffers(readbackBuffers[index]);
-                readbackBuffers[index] = 0;
-                mappedReadbacks[index] = null;
-            }
+            if (readbackFences[index] != null) readbackFences[index].close();
+            readbackFences[index] = null;
         }
-        GL15.glBindBuffer(GL21.GL_PIXEL_PACK_BUFFER, 0);
+        work.retire(resources);
         readbackRing.reset();
-        for (int texture : new int[]{cloudLayer, cloudDepth, finalSky, partial, baseNoise, detailNoise, weatherMap,
-                occupancyTexture}) {
-            if (texture != 0) {
-                GL11.glDeleteTextures(texture);
-            }
-        }
-        cloudLayer = cloudDepth = finalSky = partial = baseNoise = detailNoise = weatherMap = occupancyTexture = 0;
-        noiseUploaded = false;
-        uploadedOccupancyVersion = -1;
-        if (parametersBuffer != 0) {
-            GL15.glDeleteBuffers(parametersBuffer);
-            parametersBuffer = 0;
-        }
-        if (program != 0) {
-            GL20.glDeleteProgram(program);
-            program = 0;
-        }
         history.invalidate();
     }
 
@@ -703,15 +438,8 @@ public final class CloudSkyCompositor {
         return (value + divisor - 1) / divisor;
     }
 
-    private static void checkGlError(String operation) {
-        int error = GL11.glGetError();
-        if (error != GL11.GL_NO_ERROR) {
-            throw new IllegalStateException(operation + " failed with OpenGL error 0x" + Integer.toHexString(error));
-        }
-    }
-
     /**
-     * Slot accounting for the readback ring, kept apart from GL so it can be tested.
+     * Slot accounting for the readback ring, kept apart from Vulkan so it can be tested.
      *
      * <p>Slots are written in ring order and read back in the same order. A consumed slot can
      * stay <em>held</em> while its reader still uploads from it; at most one slot is held, and

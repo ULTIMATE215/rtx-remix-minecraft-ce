@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.texture;
 
@@ -11,20 +14,20 @@ import java.nio.ByteBuffer;
  *
  * <p>Minecraft assembles a {@code GlyphAtlasTexture} on the GPU: each glyph is uploaded
  * into its slot the first time it is rendered, from a source image that may be freed the
- * moment the upload returns, so the GL texture is the only complete copy of the page.
+ * moment the upload returns, so the GPU texture is the only complete copy of the page.
  * Remix needs the pixels to build a material for text quads, so this mirror follows
  * every glyph upload. {@code GlyphAtlasTextureMixin} opens an upload scope around the
- * glyph's {@code upload} call, and the upload mixins on {@code NativeImage} and
- * {@code GlStateManager} write the same rectangle here that they hand to GL.
+ * glyph's {@code upload} call, and {@code TextureUploadMixin} writes the same
+ * rectangle here that Minecraft's command encoder hands to Vulkan.
  *
  * <p>The mirror stores what the text shaders read, not what was uploaded. A colour page
- * is an RGBA8 texture and keeps the uploaded channels as {@code glTexSubImage2D}
- * converts them, missing colour channels zero and missing alpha opaque. An intensity
+ * is an RGBA8 texture and keeps the uploaded channels, with missing colour
+ * channels zero and missing alpha opaque. An intensity
  * page is an R8 texture that {@code rendertype_text_intensity} samples as {@code .rrrr},
  * so red is spread across all four channels here.
  *
- * <p>Glyph uploads run only on the render thread ({@code NativeImage.uploadInternal}
- * asserts it) and every reader of {@link #data()} runs there too, so the page and the
+ * <p>Glyph uploads and every reader of {@link #data()} run on the render thread,
+ * so the page and the
  * upload scope carry no synchronisation.
  */
 public final class GlyphPageMirror {
@@ -75,7 +78,7 @@ public final class GlyphPageMirror {
      * @param y           slot row in the page
      * @param width       uploaded rectangle width in pixels
      * @param height      uploaded rectangle height in pixels
-     * @param channels    bytes per source pixel, in GL channel order: red, green, blue, alpha
+     * @param channels    bytes per source pixel, in red, green, blue, alpha order
      * @param src         source bytes, positioned at the rectangle's first pixel
      * @param srcRowPitch bytes from one source row to the next
      * @throws IllegalArgumentException if the rectangle does not fit the page; a slot always does

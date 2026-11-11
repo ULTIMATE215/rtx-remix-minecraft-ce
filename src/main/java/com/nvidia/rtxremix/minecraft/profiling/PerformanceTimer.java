@@ -59,13 +59,13 @@ public class PerformanceTimer {
     // Community Edition: "Frame total" spans renderAndSubmitFrame only. The real
     // frame time is the wall-clock period between Minecraft frames, and the
     // outer rows time the interop and present work that runs after it.
-    /** {@link #recordOuter} row: the GL wait for Remix's output and its import. */
-    public static final int OUTER_VK_TO_GL = 0;
-    /** {@link #recordOuter} row: the GL copy of the finished frame back to Remix. */
-    public static final int OUTER_GL_TO_VK = 1;
-    /** {@link #recordOuter} row: Remix's Present call, including any wait for GL. */
+    /** {@link #recordOuter} row: the Vulkan wait for Remix's output and its import. */
+    public static final int OUTER_REMIX_TO_MINECRAFT = 0;
+    /** {@link #recordOuter} row: the Vulkan copy of the finished frame back to Remix. */
+    public static final int OUTER_MINECRAFT_TO_REMIX = 1;
+    /** {@link #recordOuter} row: Remix's Present call, including any wait for Minecraft. */
     public static final int OUTER_PRESENT = 2;
-    private static final String[] OUTER_NAMES = {"Interop VK->GL", "Interop GL->VK", "Remix.Present"};
+    private static final String[] OUTER_NAMES = {"Interop Remix->Minecraft", "Interop Minecraft->Remix", "Remix.Present"};
     private final FrameTimeHistogram realFrames = new FrameTimeHistogram();
     private final long[] outerTotalNanos = new long[OUTER_NAMES.length];
     private final long[] outerMaxNanos = new long[OUTER_NAMES.length];
@@ -174,7 +174,7 @@ public class PerformanceTimer {
         realFrames.add(periodNanos);
     }
 
-    /** Adds one sample to an outer row ({@link #OUTER_VK_TO_GL}, {@link #OUTER_GL_TO_VK}, {@link #OUTER_PRESENT}). */
+    /** Adds one sample to an outer row ({@link #OUTER_REMIX_TO_MINECRAFT}, {@link #OUTER_MINECRAFT_TO_REMIX}, {@link #OUTER_PRESENT}). */
     public void recordOuter(int row, long nanos) {
         if (row < 0 || row >= OUTER_NAMES.length || nanos < 0) return;
         outerTotalNanos[row] += nanos;

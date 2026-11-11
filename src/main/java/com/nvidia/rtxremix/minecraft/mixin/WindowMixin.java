@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft.mixin;
 
@@ -14,9 +17,8 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
- * Logs the GLFW handle once the window exists. The OpenGL context version the
- * window is created with is selected in {@link GlBackendMixin}, because the
- * window hints come from the selected GPU backend.
+ * Logs the GLFW handle once the window exists. MinecraftClientMixin selects the
+ * Vulkan backend before the window hints are applied.
  */
 @Mixin(Window.class)
 public abstract class WindowMixin {

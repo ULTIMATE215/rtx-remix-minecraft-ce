@@ -1,13 +1,13 @@
+#version 330
+
 // SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 // SPDX-License-Identifier: Apache-2.0
-#version 150
+#moj_import <rtx-remix-renderer:weather_parameters.glsl>
 
 in vec3 Position;
 in vec2 UV0;
 in vec4 Color;
 in ivec2 UV2;
-uniform mat4 ModelViewMat;
-uniform mat4 ProjMat;
 uniform sampler2D Sampler2;
 out vec2 texCoord;
 out vec4 vertexColor;

@@ -69,6 +69,11 @@ def install_development_build(project_dir: Path, *, game_dir: Path | None = None
     game_dir = (project_dir / game_dir).absolute()
     source = runtime_source(project_dir, selected_arch)
     bridge = project_dir / "build" / "native" / selected_arch / "remixbridge.dll"
+    packaging = project_dir / "packaging"
+    vulkan_layer = packaging / "remix-vulkan-layer.json"
+    if not vulkan_layer.is_file():
+        print(f'ERROR: Vulkan layer manifest not found at "{vulkan_layer}".')
+        return 1
     if not (source / "d3d9.dll").is_file():
         print(f'ERROR: d3d9.dll not found in "{source}".')
         print(f"       Stage one with tools\\rtx.bat sdk local <runtime dir> --arch {selected_arch}.")
@@ -106,7 +111,7 @@ def install_development_build(project_dir: Path, *, game_dir: Path | None = None
             previous.unlink()
     shutil.copy2(mod_jar, mods / "rtx-remix-renderer.jar")
     _stage_runtime(source, bridge, game_dir / "remix-sdk", selected_arch)
-    packaging = project_dir / "packaging"
+    shutil.copy2(vulkan_layer, game_dir / "remix-sdk" / vulkan_layer.name)
     shutil.copy2(packaging / "rtx.conf", game_dir / "rtx.conf")
     # Shipped profiles are refreshed; extra author-created files stay intact.
     shutil.copytree(packaging / "rtx-remix", game_dir / "rtx-remix", dirs_exist_ok=True)

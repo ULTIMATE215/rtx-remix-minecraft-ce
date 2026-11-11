@@ -1,12 +1,15 @@
 :: SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+:: SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 :: SPDX-License-Identifier: Apache-2.0
+::
+:: Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 @echo off
 setlocal enabledelayedexpansion
 
 REM ═══════════════════════════════════════════════════════════════════════
 REM  build_native.bat: Compile remixbridge.dll using MSVC
-REM  Usage: build_native.bat [x64|arm64]   (default: x64)
+REM  Usage: build_native.bat [x64|arm64] [test]   (default: x64)
 REM  Requires: Visual Studio with C++ workload, JAVA_HOME set
 REM
 REM  Output goes to build/native/{win64|arm64}/ under the repository root.
@@ -83,12 +86,14 @@ if /I "%ARCH%"=="x64" (
 set "OUT_DIR=%~dp0..\..\build\native\%OUT_ARCH%"
 if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 
+if /I "%~2"=="test" goto testExports
+
 echo Compiling remixbridge.dll for %OUT_ARCH% ...
 cl /nologo /O2 /Zi /LD /EHsc /std:c++17 ^
-   /I"%JAVA_HOME%\include" /I"%JAVA_HOME%\include\win32" /I"%REMIX_INCLUDE%" ^
-   "%~dp0remixbridge.cpp" ^
+   /I"%JAVA_HOME%\include" /I"%JAVA_HOME%\include\win32" /I"%REMIX_INCLUDE%" /I"%~dp0include" ^
+   "%~dp0remixbridge.cpp" "%~dp0vulkan_exports.cpp" ^
    /Fe"%OUT_DIR%\remixbridge.dll" ^
-   /Fo"%OUT_DIR%\remixbridge.obj" ^
+   /Fo"%OUT_DIR%\\" ^
    /Fd"%OUT_DIR%\remixbridge.pdb" ^
    /link /nologo /DEBUG dbghelp.lib
 
@@ -98,4 +103,14 @@ if errorlevel 1 (
 )
 
 echo remixbridge.dll built successfully: %OUT_DIR%\remixbridge.dll
-endlocal
+exit /b 0
+
+:testExports
+cl /nologo /O2 /EHsc /std:c++17 ^
+   /I"%JAVA_HOME%\include" /I"%JAVA_HOME%\include\win32" /I"%~dp0include" ^
+   "%~dp0vulkan_exports_test.cpp" ^
+   /Fe"%OUT_DIR%\vulkan_exports_test.exe" ^
+   /Fo"%OUT_DIR%\vulkan_exports_test.obj"
+if errorlevel 1 exit /b 1
+"%OUT_DIR%\vulkan_exports_test.exe" "%OUT_DIR%\remixbridge.dll"
+exit /b %errorlevel%

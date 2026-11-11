@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix.minecraft;
 
@@ -8,6 +11,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -117,18 +121,21 @@ class NativeExtractorTest {
         assertEquals(0, kept.get());
     }
 
-    @Test
-    void matchingMarkerWithMissingRuntimeDllReextractsTheSdk(@TempDir Path tmp) throws IOException {
+    @ParameterizedTest
+    @ValueSource(strings = {"d3d9.dll", "remixbridge.dll", "remix-vulkan-layer.json"})
+    void matchingMarkerWithMissingRuntimeComponentReextractsTheSdk(String component, @TempDir Path tmp) throws IOException {
         Path nativeRoot = createNativePayload(tmp);
         Path gameDir = Files.createDirectories(tmp.resolve("game"));
         NativeExtractor.extractIfNeeded(nativeRoot, gameDir, "1.0", "remix-sdk-win64", INLINE_CLEANUP);
-        Files.delete(gameDir.resolve("remix-sdk/d3d9.dll"));
+        Files.delete(gameDir.resolve("remix-sdk").resolve(component));
         Files.writeString(gameDir.resolve("remix-sdk/runtime.dll"), "stale runtime");
         Files.writeString(gameDir.resolve("rtx.conf"), "stale defaults");
 
         NativeExtractor.extractIfNeeded(nativeRoot, gameDir, "1.0", "remix-sdk-win64", INLINE_CLEANUP);
 
         assertEquals("shipped runtime", Files.readString(gameDir.resolve("remix-sdk/d3d9.dll")));
+        assertTrue(Files.isRegularFile(gameDir.resolve("remix-sdk/remixbridge.dll")));
+        assertTrue(Files.isRegularFile(gameDir.resolve("remix-sdk/remix-vulkan-layer.json")));
         assertEquals("shipped companion", Files.readString(gameDir.resolve("remix-sdk/runtime.dll")));
         assertEquals("shipped defaults", Files.readString(gameDir.resolve("rtx.conf")));
         assertEquals("1.0|remix-sdk-win64", Files.readString(gameDir.resolve(".rtx-remix-version")));
@@ -236,6 +243,8 @@ class NativeExtractorTest {
         Path nativeRoot = Files.createDirectories(tmp.resolve("native"));
         Path sdk = Files.createDirectories(nativeRoot.resolve("remix-sdk-win64"));
         Files.writeString(sdk.resolve("d3d9.dll"), "shipped runtime");
+        Files.writeString(sdk.resolve("remixbridge.dll"), "shipped bridge");
+        Files.writeString(sdk.resolve("remix-vulkan-layer.json"), "shipped layer");
         Files.writeString(sdk.resolve("runtime.dll"), "shipped companion");
         Files.writeString(nativeRoot.resolve("rtx.conf"), "shipped defaults");
         Path confs = Files.createDirectories(nativeRoot.resolve("rtx-remix/mods/minecraft-logic/confs"));

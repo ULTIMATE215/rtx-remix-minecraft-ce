@@ -1,12 +1,15 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 
 /*
  * RTX Remix JNI Bridge: remixbridge.dll
  *
- * Single-file JNI shim: loads d3d9.dll, calls remixapi_InitializeLibrary to
+ * JNI shim: loads d3d9.dll, calls remixapi_InitializeLibrary to
  * obtain the remixapi_Interface vtable, and exposes every Remix API method as
  * a JNI native function consumed by com.nvidia.rtxremix.RemixBridge.
  */
@@ -27,11 +30,6 @@
 #include <set>
 #include <string>
 #include <vector>
-
-// HACKHACK: link to OpenGL to expose 'glSemaphoreParameterui64vEXT',
-//           reason: LWJGL does not expose that function
-#include <gl/GL.h>
-#pragma comment(lib, "opengl32.lib")
 
 #include "remix_c.h"
 
@@ -1967,65 +1965,6 @@ JNIEXPORT void JNICALL Java_com_nvidia_rtxremix_RemixBridge_tracyFrameMark(
     if (name) {
         env->ReleaseStringUTFChars(name, cname);
     }
-}
-
-typedef uint64_t GLuint64;
-typedef void (*PFNGLCREATESEMAPHORESNVPROC)(GLsizei n, GLuint* semaphores);
-typedef void (*PFNGLSEMAPHOREPARAMETERIVNVPROC)(GLuint semaphore, GLenum pname, const GLint* params);
-typedef void (*PFNGLSEMAPHOREPARAMETERUI64VEXTPROC)(GLuint semaphore, GLenum pname, const GLuint64* params);
-
-JNIEXPORT jint JNICALL
-Java_com_nvidia_rtxremix_RemixBridge_openglSemaphoreParameterui64vEXT(JNIEnv* env, jclass, jint semaphore, jint pname, jlong param0)
-{
-    if (!g_inited) return -1;
-
-    static PFNGLSEMAPHOREPARAMETERUI64VEXTPROC glSemaphoreParameterui64vEXT = nullptr;
-    if (!glSemaphoreParameterui64vEXT) {
-      glSemaphoreParameterui64vEXT = (PFNGLSEMAPHOREPARAMETERUI64VEXTPROC)wglGetProcAddress("glSemaphoreParameterui64vEXT");
-      if (!glSemaphoreParameterui64vEXT) {
-        return -2; // not found
-      };
-    }
-
-    glSemaphoreParameterui64vEXT((GLuint)semaphore, (GLenum)pname,
-                                 (const GLuint64 *)&param0);
-
-    return 0;
-}
-
-JNIEXPORT jint JNICALL
-Java_com_nvidia_rtxremix_RemixBridge_openglSemaphoreParameterivNV(JNIEnv* env, jclass, jint semaphore, jint pname, jint param0){
-    if (!g_inited) return -1;
-
-    static PFNGLSEMAPHOREPARAMETERIVNVPROC glSemaphoreParameterivNV = nullptr;
-    if (!glSemaphoreParameterivNV) {
-      glSemaphoreParameterivNV = (PFNGLSEMAPHOREPARAMETERIVNVPROC)wglGetProcAddress("glSemaphoreParameterivNV");
-      if (!glSemaphoreParameterivNV) {
-        return -2; // not found
-      };
-    }
-
-    glSemaphoreParameterivNV((GLuint)semaphore, (GLenum)pname,
-                             (const GLint *)&param0);
-    return 0;
-}
-
-JNIEXPORT jint JNICALL
-Java_com_nvidia_rtxremix_RemixBridge_openglCreateSemaphoresNV(JNIEnv* env, jclass)
-{
-    if (!g_inited) return 0;
-
-    static PFNGLCREATESEMAPHORESNVPROC glCreateSemaphoresNV = nullptr;
-    if (!glCreateSemaphoresNV) {
-      glCreateSemaphoresNV = (PFNGLCREATESEMAPHORESNVPROC)wglGetProcAddress("glCreateSemaphoresNV");
-      if (!glCreateSemaphoresNV) {
-        return 0; // not found
-      };
-    }
-
-    GLuint semaphore = 0;
-    glCreateSemaphoresNV(1, &semaphore);
-    return (jint)semaphore;
 }
 
 } // extern "C"

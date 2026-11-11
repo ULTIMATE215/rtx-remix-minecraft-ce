@@ -16,7 +16,7 @@
 //  2 REDUCE   one workgroup: the upper-hemisphere mean, the far-cloud transmittance toward
 //             the sun and moon, and a coarse transmittance map, into FinalSky's last row
 
-#version 430 core
+#version 450
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -32,9 +32,9 @@ layout(binding = 11) uniform sampler3D DetailNoise;
 layout(binding = 12) uniform sampler2D WeatherMap;
 layout(binding = 6) uniform sampler2D Occupancy;
 
-uniform int Pass;
+layout(push_constant) uniform Dispatch { int Pass; };
 
-layout(std140, binding = 1) uniform CloudParameters {
+layout(std140, binding = 7) uniform CloudParameters {
     vec4 CameraField;      // field x, world y, field z, update index
     vec4 Shape;            // base, coverage bias, type bias, rain
     vec4 SunDirection;     // world space, w = sun disc angular radius

@@ -8,6 +8,9 @@
 package com.nvidia.rtxremix.minecraft.mixin;
 
 import com.nvidia.rtxremix.minecraft.profiling.ProfileScope;
+import com.mojang.blaze3d.systems.GpuBackend;
+import com.mojang.blaze3d.vulkan.VulkanBackend;
+import net.minecraft.client.PreferredGraphicsApi;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
 import net.minecraft.client.Minecraft;
@@ -18,6 +21,7 @@ import com.nvidia.rtxremix.minecraft.RtxRemixMod;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.Redirect;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 /**
@@ -25,6 +29,12 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
  */
 @Mixin(Minecraft.class)
 public abstract class MinecraftClientMixin {
+    @Redirect(method = "<init>", at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/client/PreferredGraphicsApi;getBackendsToTry()[Lcom/mojang/blaze3d/systems/GpuBackend;"))
+    private GpuBackend[] rtxremix$useVulkan(PreferredGraphicsApi preference) {
+        return new GpuBackend[] { new VulkanBackend() };
+    }
+
     private static final ThreadLocal<ProfileScope> rtxremix$renderScope = new ThreadLocal<>();
     private static final ThreadLocal<ProfileScope> rtxremix$renderPhaseScope = new ThreadLocal<>();
     private static final ThreadLocal<ProfileScope> rtxremix$tickScope = new ThreadLocal<>();

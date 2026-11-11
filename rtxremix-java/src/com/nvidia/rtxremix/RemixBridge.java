@@ -1,6 +1,9 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix;
 
@@ -53,6 +56,15 @@ public final class RemixBridge {
      *         Windows rejects the variable
      */
     public static native int setProcessEnvironmentVariable(String name, String value);
+
+    /** Live image identity recorded by VK_LAYER_RTXREMIX_export_info; no buffers are passed. */
+    public static native long vulkanImageGeneration(long handle, int width, int height, int vkFormat);
+
+    /** Original export parameters; returns an owned Java array and never exposes native pointers. */
+    static native long[] vulkanImageDescription(long handle, int width, int height, int vkFormat);
+
+    /** Original semaphore type/device identity; returns an owned Java array. */
+    static native long[] vulkanSemaphoreDescription(long handle);
 
     // ─── lifecycle ───────────────────────────────────────────────────────
 
@@ -416,16 +428,4 @@ public final class RemixBridge {
 
     /** Emits a named Tracy frame mark. */
     public static native void tracyFrameMark(String name);
-
-
-    /** Wrapper for 'glSemaphoreParameterui64vEXT' that is not exposed by LWJGL */
-    public static native int openglSemaphoreParameterui64vEXT(int semaphore, int pname, long param0);
-    /** Wrapper for other NV_timeline_semaphore functions that are not reported by LWJGL */
-    public static native int openglSemaphoreParameterivNV(int semaphore, int pname, int param0);
-    public static native int openglCreateSemaphoresNV();
-
-    public static int GL_SEMAPHORE_TYPE_NV = 0x95B3;
-    public static int GL_SEMAPHORE_TYPE_BINARY_NV = 0x95B4;
-    public static int GL_SEMAPHORE_TYPE_TIMELINE_NV = 0x95B5;
-    public static int GL_TIMELINE_SEMAPHORE_VALUE_NV = 0x9595;
 }

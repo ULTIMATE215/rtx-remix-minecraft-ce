@@ -1,13 +1,16 @@
 /*
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
  * SPDX-License-Identifier: Apache-2.0
+ *
+ * Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
  */
 package com.nvidia.rtxremix;
 
 public class InteropInfo {
     /** Win32 HANDLE: DXVK's Vulkan signals this semaphore after writing */
     public long dxvkDoneSemaphore_Handle;
-    /** Timeline value signaled by Remix after rendering; wait for this value in glWaitSemaphoreEXT */
+    /** Timeline value signaled by Remix after rendering; wait for this value before reading the shared images */
     public long dxvkDoneSemaphore_ValueToWait;
     /** Win32 HANDLE: client signals this semaphore after writing */
     public long clientDoneSemaphore_Handle;
