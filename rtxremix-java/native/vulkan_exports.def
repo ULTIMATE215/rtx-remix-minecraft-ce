@@ -1,0 +1,8 @@
+; SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
+; SPDX-License-Identifier: Apache-2.0
+
+LIBRARY remixbridge
+EXPORTS
+    vkGetInstanceProcAddr
+    vkGetDeviceProcAddr
+    vkNegotiateLoaderLayerInterfaceVersion

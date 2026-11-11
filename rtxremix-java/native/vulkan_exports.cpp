@@ -300,8 +300,8 @@ jlong uuidWord(const uint8_t* bytes) {
 
 extern "C" {
 
-__declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance, const char*);
-__declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice, const char*);
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance, const char*);
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice, const char*);
 
 VKAPI_ATTR VkResult VKAPI_CALL remixCreateInstance(const VkInstanceCreateInfo* info,
         const VkAllocationCallbacks* allocator, VkInstance* instance) {
@@ -555,7 +555,7 @@ static PFN_vkVoidFunction deviceHook(const char* name) {
     return nullptr;
 }
 
-__declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* name) {
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* name) {
     if (!std::strcmp(name, "vkGetDeviceProcAddr")) return reinterpret_cast<PFN_vkVoidFunction>(vkGetDeviceProcAddr);
     if (!device) return nullptr;
     auto next = deviceFor(device)->gdpa(device, name);
@@ -564,7 +564,7 @@ __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAd
     return hook ? hook : next;
 }
 
-__declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* name) {
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* name) {
     if (!std::strcmp(name, "vkGetInstanceProcAddr")) return reinterpret_cast<PFN_vkVoidFunction>(vkGetInstanceProcAddr);
     if (!std::strcmp(name, "vkGetDeviceProcAddr")) return reinterpret_cast<PFN_vkVoidFunction>(vkGetDeviceProcAddr);
     if (!std::strcmp(name, "vkCreateInstance")) return reinterpret_cast<PFN_vkVoidFunction>(remixCreateInstance);
@@ -591,7 +591,7 @@ static VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL remixGetPhysicalDeviceProcAddr(V
     return dispatch.gpdpa ? dispatch.gpdpa(instance, name) : dispatch.gipa(instance, name);
 }
 
-__declspec(dllexport) VKAPI_ATTR VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* info) {
+VKAPI_ATTR VkResult VKAPI_CALL vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* info) {
     if (!info || info->sType != LAYER_NEGOTIATE_INTERFACE_STRUCT || info->loaderLayerInterfaceVersion < 2) {
         return VK_ERROR_INITIALIZATION_FAILED;
     }

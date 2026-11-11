@@ -524,6 +524,7 @@ tasks.register('compileNativeWin64', Exec) {
     inputs.files file('rtxremix-java/native/build_native.bat'),
                  file('rtxremix-java/native/remixbridge.cpp'),
                  file('rtxremix-java/native/vulkan_exports.cpp'),
+                 file('rtxremix-java/native/vulkan_exports.def'),
                  file('rtxremix-java/native/include/remix_c.h')
     inputs.files fileTree('rtxremix-java/native/include') { include '**/*.h' }
     outputs.files file('build/native/win64/remixbridge.dll'),
@@ -538,6 +539,7 @@ tasks.register('compileNativeArm64', Exec) {
     inputs.files file('rtxremix-java/native/build_native.bat'),
                  file('rtxremix-java/native/remixbridge.cpp'),
                  file('rtxremix-java/native/vulkan_exports.cpp'),
+                 file('rtxremix-java/native/vulkan_exports.def'),
                  file('rtxremix-java/native/include/remix_c.h')
     inputs.files fileTree('rtxremix-java/native/include') { include '**/*.h' }
     outputs.files file('build/native/arm64/remixbridge.dll'),

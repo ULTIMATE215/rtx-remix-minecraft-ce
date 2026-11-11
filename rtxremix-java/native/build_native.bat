@@ -95,7 +95,7 @@ cl /nologo /O2 /Zi /LD /EHsc /std:c++17 ^
    /Fe"%OUT_DIR%\remixbridge.dll" ^
    /Fo"%OUT_DIR%\\" ^
    /Fd"%OUT_DIR%\remixbridge.pdb" ^
-   /link /nologo /DEBUG dbghelp.lib
+   /link /nologo /DEBUG /DEF:"%~dp0vulkan_exports.def" dbghelp.lib
 
 if errorlevel 1 (
     echo ERROR: Compilation failed.
