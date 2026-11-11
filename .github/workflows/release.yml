@@ -44,6 +44,7 @@ jobs:
           "mc=$($props.minecraft_version)" >> $env:GITHUB_OUTPUT
           "mod=$($props.mod_version)" >> $env:GITHUB_OUTPUT
           "java=$($props.release_java_version)" >> $env:GITHUB_OUTPUT
+          "loader=$($props.fabric_loader_version)" >> $env:GITHUB_OUTPUT
 
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
@@ -54,36 +55,36 @@ jobs:
       - name: Build and test
         run: '& "$env:GITHUB_WORKSPACE\gradlew.bat" build test -Prelease -Parch=win64'
 
-      - name: Build the full release archive
-        run: '& "$env:GITHUB_WORKSPACE\gradlew.bat" releaseArchive -Prelease -Parch=win64'
-
       - name: Publish the release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           MC: ${{ steps.props.outputs.mc }}
           MOD: ${{ steps.props.outputs.mod }}
+          MC_JAVA: ${{ steps.props.outputs.java }}
+          FABRIC_LOADER: ${{ steps.props.outputs.loader }}
         run: |
-          $zip = Get-ChildItem build/distributions -Filter '*.zip' | Select-Object -First 1
-          if (-not $zip) { throw 'releaseArchive produced no ZIP' }
-          $hash = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower()
-          "$hash  $($zip.Name)" | Out-File -Encoding ascii "$($zip.FullName).sha256"
+          $jar = Get-Item "build/libs/rtx-remix-renderer-$($env:MOD)+mc$($env:MC)-win64.jar" -ErrorAction Stop
+          $hash = (Get-FileHash $jar.FullName -Algorithm SHA256).Hash.ToLower()
+          "$hash  $($jar.Name)" | Out-File -Encoding ascii "$($jar.FullName).sha256"
           $notes = @"
           RTX Remix for Minecraft Community Edition (Unofficial) $env:MOD for **Minecraft $env:MC** (Fabric, Windows x64).
 
           ### Install
-          1. Download ``$($zip.Name)`` and extract it.
-          2. Run ``install.bat`` and follow the prompts (it sets up Prism Launcher, Fabric, and the mod).
-          3. The JAR bundles the RTX Remix runtime; the first launch unpacks it.
+          1. Create a Minecraft $env:MC instance with Java $env:MC_JAVA and Fabric Loader $env:FABRIC_LOADER or newer.
+          2. Download ``$($jar.Name)`` and copy it into the instance's ``mods`` folder.
+          3. Launch the Fabric instance. Fabric API, the RTX Remix runtime, and required resources are bundled; the first launch unpacks the native files.
 
           Requires a GeForce RTX GPU. Not affiliated with or endorsed by NVIDIA, Mojang, or Microsoft.
 
           SHA-256: ``$hash``
           "@
+          $notesPath = Join-Path $env:RUNNER_TEMP 'rtx-remix-release-notes.md'
+          [System.IO.File]::WriteAllText($notesPath, $notes)
           gh release view $env:TAG *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $env:TAG $zip.FullName "$($zip.FullName).sha256" --clobber
+            gh release upload $env:TAG $jar.FullName "$($jar.FullName).sha256" --clobber
           } else {
-            gh release create $env:TAG $zip.FullName "$($zip.FullName).sha256" `
-              --title "$env:MOD for Minecraft $env:MC" --notes $notes
+            gh release create $env:TAG $jar.FullName "$($jar.FullName).sha256" `
+              --title "$env:MOD for Minecraft $env:MC" --notes-file $notesPath
           }

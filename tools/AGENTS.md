@@ -57,8 +57,10 @@ launcher's description. There is no player-name option. Besides the root
 type, profile name, ownership, and active flag from `accounts.json`, never its
 tokens.
 
-`rtx.bat install` stages an already-built development mod into an existing
+`rtx.bat install` stages an already-built `build/dev/*-dev.jar` into an existing
 Fabric game directory, separate from the repository-local launch workflow.
+`gradlew.bat jar` builds that intermediate; `build/libs/` holds the distributable
+JAR with an embedded SDK, which must not replace a developer's staged runtime.
 Keep its runtime/bridge architecture selection, unchanged-SDK marker, copies of
 `rtx.conf`, the conf payload and the runtime textures, and author-created file
 preservation in `src/rtx_tools/install.py`.

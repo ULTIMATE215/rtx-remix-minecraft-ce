@@ -774,13 +774,13 @@ def build_parser() -> argparse.ArgumentParser:
         "install",
         help="install a built development mod into an existing Fabric installation",
         description=(
-            "Installs the newest non-sources development JAR from build/libs, the\n"
+            "Installs the newest development JAR from build/dev, the\n"
             "staged runtime, JNI bridge, gameplay conf payload, and runtime textures.\n"
             "Baseline PBR textures are built into the JAR; packaging/migrate_resource_packs.ps1\n"
             "removes the retired generated baseline and preserves user-pack ordering.\n"
-            "Build first with gradlew.bat build.\n"
-            "The game directory must already have Fabric Loader and Fabric API;\n"
-            "a missing Fabric API JAR produces a warning. This does not launch the game."
+            "Build first with gradlew.bat jar.\n"
+            "The game directory must already have Fabric Loader; Fabric API is bundled.\n"
+            "This does not launch the game."
         ),
         epilog=(
             "REMIX_BUILD overrides remix-runtime/<arch> with a custom runtime directory.\n"

@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 import argparse
 import contextlib
@@ -27,8 +30,9 @@ class CliHelpTests(unittest.TestCase):
     def test_install_help_explains_development_payload_and_prerequisites(self):
         text = self.help_for("install")
 
-        self.assertIn("gradlew.bat build", text)
-        self.assertIn("Fabric Loader and Fabric API", text)
+        self.assertIn("gradlew.bat jar", text)
+        self.assertIn("build/dev", text)
+        self.assertIn("Fabric Loader; Fabric API is bundled", text)
         self.assertIn("gameplay conf payload, and runtime textures", text)
         self.assertIn("Baseline PBR textures are built into the JAR", text)
         self.assertIn("packaging/migrate_resource_packs.ps1", text)

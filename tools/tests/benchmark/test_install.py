@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from rtx_tools import cli, prism
+from rtx_tools import cli
 from rtx_tools.benchmark import util
 
 pytestmark = pytest.mark.usefixtures("isolated_tools_config")
@@ -31,7 +31,6 @@ def migration(monkeypatch: pytest.MonkeyPatch) -> Mock:
 
 @pytest.fixture
 def installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migration: Mock) -> tuple[Path, Path]:
-    fabric_api_version = prism.installer_constant("FABRIC_API_VERSION")
     project = tmp_path / "checkout"
     game = tmp_path / "existing game"
     (game / "mods").mkdir(parents=True)
@@ -43,11 +42,11 @@ def installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migration: Moc
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
 
     files = {
-        "build/libs/rtx-remix-renderer-0.1.jar": b"newest mod",
-        "build/libs/rtx-remix-renderer-9.9.jar": b"older mod",
-        "build/libs/rtx-remix-renderer-9.9-SOURCES.jar": b"sources only",
+        "build/dev/rtx-remix-renderer-0.1-dev.jar": b"newest mod",
+        "build/dev/rtx-remix-renderer-9.9-dev.jar": b"older mod",
+        "build/dev/rtx-remix-renderer-9.9-sources.jar": b"sources only",
+        "build/libs/rtx-remix-renderer-0.1.jar": b"packaged runtime must not replace the development SDK",
         "packaging/rtx.conf": b"runtime defaults",
-        "packaging/installer.ps1": f"$script:FABRIC_API_VERSION = '{fabric_api_version}'\n".encode(),
         "packaging/rtx-remix/mods/minecraft-logic/weather/rain.conf": b"shipped rain",
         "remix-runtime/textures/overcast_thunderstorm_bc6u.dds": b"overcast texture",
         "remix-runtime/textures/water_normals_flipbook.dds": b"water normals",
@@ -60,11 +59,11 @@ def installation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, migration: Moc
         files[f"build/native/{arch}/remixbridge.dll"] = f"{arch} bridge".encode()
     for name, content in files.items():
         write_file(project / name, content)
-    jars = project / "build/libs"
+    jars = project / "build/dev"
     for name, timestamp in (
-        ("rtx-remix-renderer-9.9.jar", 1_000),
-        ("rtx-remix-renderer-0.1.jar", 2_000),
-        ("rtx-remix-renderer-9.9-SOURCES.jar", 3_000),
+        ("rtx-remix-renderer-9.9-dev.jar", 1_000),
+        ("rtx-remix-renderer-0.1-dev.jar", 2_000),
+        ("rtx-remix-renderer-9.9-sources.jar", 3_000),
     ):
         os.utime(jars / name, (timestamp, timestamp))
     return project, game
@@ -162,15 +161,13 @@ def test_install_reports_resource_pack_migration_failure(installation, migration
     assert "Installed to" not in output
 
 
-def test_install_warns_about_missing_fabric_api_without_installing_it(installation, capsys):
+def test_install_uses_bundled_fabric_api_without_requiring_a_separate_jar(installation, capsys):
     _, game = installation
 
     assert run_install(game) == 0
 
     output = capsys.readouterr().out
-    assert f"WARNING: no fabric-api jar in {game / 'mods'}." in output
-    fabric_api_version = prism.installer_constant("FABRIC_API_VERSION")
-    assert f"fabric-api >={fabric_api_version} (https://modrinth.com/mod/fabric-api)" in output
+    assert "WARNING" not in output
     assert list((game / "mods").glob("fabric-api-*.jar")) == []
 
 
@@ -192,9 +189,8 @@ def test_install_checks_prerequisites_before_changing_game(installation, migrati
     elif missing == "empty texture":
         (project / "remix-runtime/textures/overcast_thunderstorm_bc6u.dds").write_bytes(b"")
     else:
-        for jar in (project / "build/libs").glob("*.jar"):
-            if "-sources" not in jar.name.lower():
-                jar.unlink()
+        for jar in (project / "build/dev").glob("*-dev.jar"):
+            jar.unlink()
 
     assert run_install(game, "--arch", arch) == 1
     migration.assert_not_called()
@@ -220,7 +216,7 @@ def test_install_checks_prerequisites_before_changing_game(installation, migrati
         assert "overcast_thunderstorm_bc6u.dds" in output
         assert "fetchRuntimeTextures" in output
     else:
-        assert "ERROR: no mod jar found in build\\libs\\." in output
+        assert "ERROR: no development mod jar found in build\\dev\\. Run gradlew.bat jar first." in output
 
 
 @pytest.mark.parametrize(

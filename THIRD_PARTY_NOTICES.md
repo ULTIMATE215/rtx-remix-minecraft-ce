@@ -13,6 +13,14 @@ locations given.
 - License: Apache License, Version 2.0 (see [LICENSE](LICENSE))
 - Source: https://github.com/gradle/gradle
 
+## Fabric Java dependency
+
+The Fabric JAR bundles Fabric API at the version pinned by `fabric_api_version`
+in `gradle.properties`, copyright FabricMC contributors, under the Apache
+License, Version 2.0. The unmodified dependency JAR and its module JARs retain
+their license texts under `META-INF/jars/` inside the mod JAR.
+Source: https://github.com/FabricMC/fabric
+
 ## Forge Java dependency
 
 The Forge 1.12.2 JAR bundles JOML 1.10.5, copyright JOML contributors,

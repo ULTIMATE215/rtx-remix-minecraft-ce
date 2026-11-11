@@ -253,12 +253,11 @@ class PrismLauncher:
         project = util.PROJECT_DIR
         gradle = [str(project / "gradlew.bat")]
         if build:
-            gradle += ["build", "-x", "test", "stageFabricApi", f"-Parch={arch}", "--console=plain", "--quiet"]
+            gradle += ["jar", "stageFabricApi", f"-Parch={arch}", "--console=plain", "--quiet"]
         else:
             gradle += ["stageFabricApi", "--quiet"]
         util.run(gradle, cwd=project, env=runner.gradle_env())
         self._runtime_probe = runtime_compat.warn_if_incompatible(project, arch)
-        # Before the install, which warns about a mods folder without Fabric API.
         self._install_fabric_api(project / "build" / "dev" / "fabric-api.jar")
         if install.install_development_build(project, game_dir=self.game_dir, arch=arch) != 0:
             raise LaunchBlocked(f"Could not install the development build into {self.game_dir}; see the errors above.")

@@ -12,7 +12,6 @@ import os
 import shutil
 from pathlib import Path
 
-from . import prism
 from .benchmark import util
 
 # The runtime textures the mod loads from <gameDir>/textures/. build.gradle checks the same files after every pull.
@@ -79,14 +78,10 @@ def install_development_build(project_dir: Path, *, game_dir: Path | None = None
         print(f'ERROR: JNI bridge not found at "{bridge}".')
         print(f"       Build it with .\\gradlew.bat {task}.")
         return 1
-    jars = (
-        jar
-        for jar in (project_dir / "build" / "libs").glob("rtx-remix-renderer-*.jar")
-        if jar.is_file() and "-sources" not in jar.name.lower()
-    )
+    jars = (jar for jar in (project_dir / "build" / "dev").glob("rtx-remix-renderer-*-dev.jar") if jar.is_file())
     mod_jar = max(jars, key=lambda jar: jar.stat().st_mtime_ns, default=None)
     if mod_jar is None:
-        print("ERROR: no mod jar found in build\\libs\\.")
+        print("ERROR: no development mod jar found in build\\dev\\. Run gradlew.bat jar first.")
         return 1
     textures = project_dir / "remix-runtime" / "textures"
     if not textures.is_dir():
@@ -105,19 +100,11 @@ def install_development_build(project_dir: Path, *, game_dir: Path | None = None
         return 1
 
     mods = game_dir / "mods"
-    missing_fabric_api = not any(mods.glob("fabric-api-*.jar"))
-    fabric_api_version = (
-        prism.installer_constant("FABRIC_API_VERSION", project_dir=project_dir) if missing_fabric_api else None
-    )
     mods.mkdir(parents=True, exist_ok=True)
     for previous in mods.glob("rtx-remix-renderer*.jar"):
         if previous.is_file():
             previous.unlink()
     shutil.copy2(mod_jar, mods / "rtx-remix-renderer.jar")
-    if missing_fabric_api:
-        print(f"WARNING: no fabric-api jar in {mods}.")
-        print(f"         The mod requires fabric-api >={fabric_api_version} (https://modrinth.com/mod/fabric-api).")
-
     _stage_runtime(source, bridge, game_dir / "remix-sdk", selected_arch)
     packaging = project_dir / "packaging"
     shutil.copy2(packaging / "rtx.conf", game_dir / "rtx.conf")

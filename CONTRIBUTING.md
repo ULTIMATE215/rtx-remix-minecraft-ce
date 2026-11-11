@@ -319,13 +319,14 @@ Use the actual target branch instead of `main` if the change targets another
 branch. Keep machine-local choices in ignored `tools/config.local.json`; the
 shipped defaults pin the demo world and art pack and select no graphics preset.
 
-To build an installable release, run `.\gradlew.bat releaseArchive`. It runs
-`package` and `verifyPackageJar`, stages the verified JAR, which carries the
-runtime textures, with the installer scripts, installer documentation, and
-license notices under `build/release/`, and writes a ZIP with the same layout
-under `build/distributions/`. Use `-Parch=win64` or `-Parch=arm64` for one
-architecture; omitting it includes both. The baseline resource pack is built
-into the mod, so the archive has no `resourcepacks/`.
+`.\gradlew.bat build` produces and verifies an installable JAR in `build/libs/`,
+including Fabric API, the native runtime, textures, configuration, and licenses.
+Use `-Parch=win64` or `-Parch=arm64` for one architecture; omitting it includes
+both. For an optional installer archive, `.\gradlew.bat releaseArchive` stages
+the same verified JAR with installer scripts, documentation, and license notices
+under `build/release/`, then writes a ZIP under `build/distributions/`.
+The baseline resource pack is built into the mod, so the archive has no
+`resourcepacks/`.
 
 ### Visual Comparisons
 
@@ -380,8 +381,9 @@ and the public-boundary gate. On a pull request it also scans the commit
 messages from the base SHA to the head SHA.
 [`build`](.github/workflows/build.yml) installs the JDK from `release_java_version`
 (25 on this branch) and runs
-`gradlew.bat build test`. Both use read-only repository permissions and no
-secrets, including for fork pull requests. The build fetches the pinned
+`gradlew.bat build test -Parch=win64` and uploads the installable JAR. Both use
+read-only repository permissions and no secrets, including for fork pull
+requests. The build fetches the pinned
 runtime from public Packman, so it needs no credentials; never add private
 ones to a workflow.
 

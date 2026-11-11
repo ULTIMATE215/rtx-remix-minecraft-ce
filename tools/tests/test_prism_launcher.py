@@ -873,9 +873,7 @@ def test_prepare_builds_probes_then_installs_into_the_instance(launcher, fake_gr
     project = util.PROJECT_DIR
     assert fake_gradle.args == [
         str(project / "gradlew.bat"),
-        "build",
-        "-x",
-        "test",
+        "jar",
         "stageFabricApi",
         "-Parch=arm64",
         "--console=plain",

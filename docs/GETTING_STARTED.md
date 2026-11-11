@@ -255,20 +255,21 @@ interactive readiness from the settled image.
 ## Other Commands
 
 ```powershell
-.\gradlew.bat build                         # development JAR in build/libs/
+.\gradlew.bat build -Parch=win64            # installable JAR in build/libs/
 .\gradlew.bat test                          # JUnit suites
-.\gradlew.bat package -Parch=win64           # installable JAR in build/distributions/
-.\gradlew.bat releaseArchive -Parch=win64    # installable release ZIP in build/distributions/
+.\gradlew.bat jar -Parch=win64              # development intermediate in build/dev/
+.\gradlew.bat package -Parch=win64          # same installable JAR as build
+.\gradlew.bat releaseArchive -Parch=win64   # optional installer ZIP in build/distributions/
 ```
 
 `.\gradlew.bat compileJava` checks Java compilation without fetching or staging
 the runtime or compiling the JNI bridge. It is a useful iteration check, not
 validation of native integration.
 
-The JAR from `package` is the one players get: it embeds the runtime, gameplay
-conf payload, runtime textures, and baseline PBR textures. To try it in a
-normal installation of Minecraft 26.2 that already has Fabric Loader and
-Fabric API, drop it into the instance's `mods` folder; nothing else is needed.
+The JAR from `build` is the one players get: it embeds Fabric API, the runtime,
+gameplay conf payload, runtime textures, and baseline PBR textures. To try it
+in a Minecraft 26.2 instance using Java 25 and Fabric Loader 0.20.1 or newer,
+drop it into the instance's `mods` folder. Fabric API needs no separate JAR.
 The release archive's installer also migrates old generated baseline packs and
 preserves user-pack ordering.
 
@@ -280,20 +281,21 @@ bridge, `rtx.conf`, the gameplay conf payload, and the runtime textures into
 `run/`, the game directory of Gradle's `runClient` task, so every build
 refreshes it. The developer tools' Prism launches use `run-prism\` instead.
 
-`build` produces a lightweight JAR that is not installable on its own.
-`package` embeds the runtime, `rtx.conf`, the gameplay conf payload, and the
-runtime textures.
+`build`, `assemble`, and `package` all produce and verify the installable JAR
+in `build/libs/`. The development intermediate and sources JAR stay in
+`build/dev/`; `jar` builds only the intermediate for a separately staged SDK.
 
 `verifyPackageJar` rejects Python interpreter and binding payloads because the
 runtime uses Python-free OpenUSD. Plain `.py` templates are not interpreters:
 `usd/usd/resources/codegenTemplates/__init__.py` is deliberately permitted.
-The task also requires every `packaging/licenses/` file in the JAR.
+The task also requires every `packaging/licenses/` file and checks that the
+bundled Fabric API is registered in `fabric.mod.json` for Fabric Loader.
 
-| `package` invocation | Output |
+| `build` invocation | Output |
 |---|---|
-| `package` | Dual-architecture fat JAR. Needs both architectures staged from the same kind of source |
-| `package -Parch=win64` | win64 only, skips the arm64 bridge compile |
-| `package -Parch=arm64` | arm64 only, useful for cross-building for device testing |
+| `build` | Dual-architecture JAR. Needs both architectures staged from the same kind of source |
+| `build -Parch=win64` | win64 only, skips the arm64 bridge compile |
+| `build -Parch=arm64` | arm64 only, useful for cross-building for device testing |
 
 `releaseArchive` runs `package` and its `verifyPackageJar` check, then stages
 the verified JAR under `build/release/mods/` and the installer scripts,
@@ -334,9 +336,10 @@ See [Configuration](../tools/README.md#configuration).
 Pull requests and pushes to `main` run the GitHub
 [`check`](../.github/workflows/check.yml) and
 [`build`](../.github/workflows/build.yml) workflows on Windows.
-They run `tools\rtx.bat check --tests` and `gradlew.bat build test`,
+They run `tools\rtx.bat check --tests` and `gradlew.bat build test -Parch=win64`,
 respectively, with read-only repository permissions and no secrets. Pull
-request checks also scan the added commit messages. These workflows do not
+request checks also scan the added commit messages. The build uploads the
+installable JAR as an artifact. These workflows do not
 launch a GPU client, run benchmarks, or produce a release archive; run those
 locally when they are relevant. Runtime fetching has the publication
 prerequisite described in [Get A Runtime](#get-a-runtime).
@@ -347,7 +350,7 @@ prerequisite described in [Get A Runtime](#get-a-runtime).
 |---|---|---|
 | Iterate on this repository | `tools\rtx.bat launch`, or `tools\rtx.bat` for the developer dashboard, through this checkout's Prism instance | Installed Prism's profile, or `run-prism\instances\rtx-remix-dev\.minecraft` for portable Prism |
 | Produce an artifact | `gradlew build`, `gradlew package`, or `gradlew releaseArchive` | None |
-| Test inside an existing Microsoft Launcher install | `tools\rtx.bat install` after `gradlew build` | `%APPDATA%\.minecraft`, or `--game-dir DIR` |
+| Test inside an existing Microsoft Launcher install | `tools\rtx.bat install` after `gradlew jar` | `%APPDATA%\.minecraft`, or `--game-dir DIR` |
 
 Launch development clients through `tools\rtx.bat launch` and a signed-in
 Prism account. Use the checkout's Prism game directory for logs, saves, settings,
@@ -357,18 +360,18 @@ and Mixin exports.
 it. Build, then install from the repository root:
 
 ```powershell
-.\gradlew.bat build
+.\gradlew.bat jar
 .\tools\rtx.bat install
 ```
 
 The CLI bootstrap manages uv and its Python environment. The target installation
-must already have a compatible Fabric Loader profile and Fabric API. The command
-warns if Fabric API is missing; it does not install Fabric or launch Minecraft.
+must already have a compatible Fabric Loader profile. Fabric API is bundled
+in the JAR; the command does not install Fabric Loader or launch Minecraft.
 Add `--game-dir DIR` to select another installation and `--arch win64` or
 `--arch arm64` to select its architecture. Relative paths use the repository
 root. Without `--arch`, `REMIX_ARCH` wins, then the host architecture.
 
-The command installs the newest non-sources development JAR, the staged runtime
+The command installs the newest `*-dev.jar` from `build/dev/`, the staged runtime
 from `remix-runtime/<arch>/`, the matching bridge from `build/native/<arch>/`,
 `packaging/rtx.conf`, the `packaging/rtx-remix/` gameplay conf payload, and runtime
 textures. Baseline PBR textures are built into the JAR. The command removes its

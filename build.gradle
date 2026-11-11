@@ -31,8 +31,8 @@ def gitDirty = providers.exec {
 
 // --- Build target architectures ------------------------------------------
 // Gradle -Parch flag controls which platforms are included in the JAR and
-// which native bridges are compiled. Omit for the default dual-arch fat JAR;
-// pass -Parch=win64 or -Parch=arm64 for a single-arch dev JAR.
+// which native bridges are compiled. Omit for the default dual-arch JAR;
+// pass -Parch=win64 or -Parch=arm64 for a single-arch JAR.
 def archProperty = project.findProperty('arch')
 if (archProperty && !(archProperty in ['win64', 'arm64'])) {
     throw new GradleException(
@@ -209,10 +209,10 @@ loom {
     }
 }
 
-// Fabric API (keep in sync with FABRIC_API_VERSION in packaging/installer.ps1,
-// which is what gets installed at runtime on the user's machine). One literal
-// serves both the compile dependency and stageFabricApi.
+// Fabric API is nested by Loom so installing the mod needs only one JAR.
+// Keep the pin in sync with FABRIC_API_VERSION in packaging/installer.ps1.
 def fabricApiCoordinate = "net.fabricmc.fabric-api:fabric-api:${providers.gradleProperty('fabric_api_version').get()}"
+def bundledFabricApiPath = "META-INF/jars/fabric-api-${providers.gradleProperty('fabric_api_version').get()}.jar"
 def fabricLoaderVersion = providers.gradleProperty('fabric_loader_version').get()
 
 configurations {
@@ -227,6 +227,7 @@ dependencies {
     implementation "net.fabricmc:fabric-loader:${fabricLoaderVersion}"
 
     implementation fabricApiCoordinate
+    include fabricApiCoordinate
 
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
@@ -520,6 +521,8 @@ tasks.register('compileNativeArm64', Exec) {
 }
 
 jar {
+    archiveClassifier.set('dev')
+    destinationDirectory.set(layout.buildDirectory.dir('dev'))
     from("LICENSE") {
         rename { "${it}_${projectArchiveName}" }
     }
@@ -531,16 +534,18 @@ jar {
     }
 }
 
-// `build` leaves Loom's remapped lightweight JAR in build/libs for fast dev
-// iteration. packageJar starts with that already-remapped JAR and adds only the
-// selected native payload, writing the distributable JAR to build/distributions.
-// Packaging therefore depends on an explicit task instead of guessing intent
-// from Gradle's command-line task names (`package` versus `:package`).
-def remapJarTask = tasks.named('jar')
+tasks.named('sourcesJar') {
+    destinationDirectory.set(layout.buildDirectory.dir('dev'))
+}
+
+// Loom finishes the mod metadata and nested dependencies before the native
+// payload is added. Only the installable JAR goes into build/libs; development
+// tools use the intermediate JAR in build/dev with their separately staged SDK.
+def developmentJarTask = tasks.named('jar')
 def packageJarTask = tasks.register('packageJar', Zip) {
-    description = 'Assembles the remapped distributable JAR with the selected platform SDKs bundled'
+    description = 'Assembles an installable JAR in build/libs with Fabric API and the selected platform SDKs'
     group = 'build'
-    dependsOn remapJarTask
+    dependsOn developmentJarTask
     dependsOn buildArches.collect { fetchRuntimeSdkTasks[it] }
     if (buildArches.contains('win64')) dependsOn 'compileNativeWin64'
     if (buildArches.contains('arm64')) dependsOn 'compileNativeArm64'
@@ -548,12 +553,13 @@ def packageJarTask = tasks.register('packageJar', Zip) {
     archiveBaseName.set(projectArchiveName)
     archiveVersion.set(resolvedBuildVersion)
     archiveExtension.set('jar')
-    destinationDirectory.set(layout.buildDirectory.dir('distributions'))
+    destinationDirectory.set(layout.buildDirectory.dir('libs'))
     duplicatesStrategy = DuplicatesStrategy.FAIL
     preserveFileTimestamps = false
     reproducibleFileOrder = true
+    zip64 = true
 
-    from({ zipTree(remapJarTask.get().archiveFile.get().asFile) })
+    from({ zipTree(developmentJarTask.get().archiveFile.get().asFile) })
 
     doFirst {
         checkPackageSourceHomogeneity()
@@ -612,7 +618,7 @@ def packageJarArchive = packageJarTask.flatMap { it.archiveFile }
 def remixModsPayloadDir = file('packaging/rtx-remix')
 def licensesPayloadDir = file('packaging/licenses')
 def verifyPackageJarTask = tasks.register('verifyPackageJar') {
-    description = 'Verifies the distributable JAR contains exactly the selected native payloads, the runtime textures, and the license texts'
+    description = 'Verifies the installable JAR contains Fabric API, the selected native payloads, textures, and licenses'
     group = 'verification'
     dependsOn packageJarTask
     inputs.file(packageJarArchive)
@@ -623,7 +629,7 @@ def verifyPackageJarTask = tasks.register('verifyPackageJar') {
         def archive = packageJarArchive.get().asFile
         def zip = new java.util.zip.ZipFile(archive)
         try {
-            def required = ['META-INF/MANIFEST.MF', 'fabric.mod.json', 'native/rtx.conf']
+            def required = ['META-INF/MANIFEST.MF', 'fabric.mod.json', 'native/rtx.conf', bundledFabricApiPath]
             buildArches.each { arch ->
                 required.add("native/remix-sdk-${arch}/d3d9.dll")
                 required.add("native/remix-sdk-${arch}/remixbridge.dll")
@@ -643,6 +649,13 @@ def verifyPackageJarTask = tasks.register('verifyPackageJar') {
             if (!missing.isEmpty()) {
                 throw new GradleException(
                     "Distributable JAR ${archive} is missing required entries: ${missing.join(', ')}")
+            }
+
+            def metadata = zip.getInputStream(zip.getEntry('fabric.mod.json')).withCloseable {
+                new groovy.json.JsonSlurper().parse(it, 'UTF-8')
+            }
+            if (!metadata.jars?.any { it.file == bundledFabricApiPath }) {
+                throw new GradleException('Distributable JAR must register its bundled Fabric API in fabric.mod.json')
             }
 
             def entryNames = zip.entries().collect { it.name }
@@ -671,10 +684,14 @@ def verifyPackageJarTask = tasks.register('verifyPackageJar') {
     }
 }
 
+tasks.named('assemble') {
+    dependsOn verifyPackageJarTask
+}
+
 tasks.register('package') {
-    description = 'Builds a distributable JAR with the selected platform SDKs bundled'
+    description = 'Builds and verifies the installable JAR in build/libs (same as build)'
     group = 'build'
-    dependsOn 'build', verifyPackageJarTask
+    dependsOn 'build'
 }
 
 def stageReleaseArchiveTask = tasks.register('stageReleaseArchive', Sync) {

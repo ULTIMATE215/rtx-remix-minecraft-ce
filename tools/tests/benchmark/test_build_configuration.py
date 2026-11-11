@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 RTX Remix for Minecraft Community Edition contributors
 # SPDX-License-Identifier: Apache-2.0
+#
+# Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 import re
 import subprocess
@@ -17,7 +20,7 @@ class BuildConfigurationTests(unittest.TestCase):
         build = (REPO_ROOT / "build.gradle").read_text(encoding="utf-8")
         wrapper = (REPO_ROOT / "gradle" / "wrapper" / "gradle-wrapper.properties").read_text(encoding="utf-8")
 
-        loom = re.search(r"id 'fabric-loom' version '([^']+)'", build)
+        loom = re.search(r"id 'net\.fabricmc\.fabric-loom' version '([^']+)'", build)
         if loom is None:
             self.fail("Fabric Loom version declaration is missing")
         self.assertNotIn("SNAPSHOT", loom.group(1).upper())
@@ -29,9 +32,10 @@ class BuildConfigurationTests(unittest.TestCase):
         build = (REPO_ROOT / "build.gradle").read_text(encoding="utf-8")
 
         self.assertNotIn("startParameter.taskNames", build)
-        self.assertIn("tasks.register('packageJar', Zip)", build)
+        package = re.search(r"(?ms)^def packageJarTask = tasks.register\('packageJar', Zip\) \{(.+?)^\}", build)
+        assert package is not None
         self.assertIn("tasks.register('verifyPackageJar')", build)
-        self.assertIn("destinationDirectory.set(layout.buildDirectory.dir('distributions'))", build)
+        self.assertIn("destinationDirectory.set(layout.buildDirectory.dir('libs'))", package.group(1))
 
     def test_release_staging_uses_only_the_verified_package_archive(self):
         build = (REPO_ROOT / "build.gradle").read_text(encoding="utf-8")

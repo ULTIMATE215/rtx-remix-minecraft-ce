@@ -70,7 +70,7 @@ RTX Remix for Minecraft 社区版是 NVIDIA 开源项目
 
 26.2 以 `mc/1.21.1` 的 `0.1.0-ce.7` 为功能基线适配。源码使用 Mojang 官方名，依赖为 Fabric Loader 0.20.1、Fabric API 0.161.0+26.2、Loom 1.19.3、Gradle 9.8.2 和 Java 25；开发启动器、CI 与安装器使用同一 Java 主版本。
 
-**源码迁移已进行静态检查；`mc/26.2` 的专用 [Actions 工作流](.github/workflows/build-26.2.yml) 负责 Windows x64 编译打包，安装包见成功运行的产物。本次按要求不运行测试、JNI 加载或游戏验证。以下适配范围不代表画面、性能或第三方模组兼容性已经验证。**
+**源码迁移已进行静态检查；`mc/26.2` 的专用 [Actions 工作流](.github/workflows/build-26.2.yml) 负责 Windows x64 编译打包，可安装 JAR 见成功运行的产物。该工作流不运行测试、JNI 加载或游戏验证。以下适配范围不代表画面、性能或第三方模组兼容性已经验证。**
 
 - 按 26.2 的 feature renderer 回放实体命令，包括文字、名牌、拴绳、着火、移动方块和附魔光效；复用原版提取的实体状态，恢复手持物品的持有者/手别、火焰和烟雾。原版圆形影子仍由 Remix 的几何阴影替代。
 - 恢复雨滴折射和带雾雪片的合成、字形页镜像、多图集动画转发，以及物品图集、拾取物品和模型粒子捕获。
@@ -80,12 +80,13 @@ RTX Remix for Minecraft 社区版是 NVIDIA 开源项目
 
 ## 安装（本地）
 
-1. 使用专用 Actions 工作流的安装包，或在 Windows / Java 25 环境构建：`.\gradlew.bat package -Parch=win64`，产物位于 `build\distributions\`。
-2. 安装到已有的官方安装目录（会自动备份被替换的 jar 和 conf）：
-   ```powershell
-   .\packaging\community-install.ps1 -GameDir 'D:\PCL\.minecraft\versions\RTX' -Jar '<上一步的 jar>'
-   ```
-3. 恢复官方版：`.\packaging\community-install.ps1 -GameDir '<同上>' -Restore`
+1. 下载专用 Actions 工作流产物中的 JAR，或在具备 C++ 构建工具的 Windows / Java 25 环境执行：`.\gradlew.bat build -Parch=win64`，可安装 JAR 位于 `build\libs\`。
+2. 为 Minecraft 26.2 实例配置 Java 25 和 Fabric Loader 0.20.1 或更新版本，把 JAR 放入该实例的 `mods` 目录。
+3. 启动游戏。Fabric API、JNI 桥接库、Remix 运行时、配置和必要纹理均已内嵌，首次启动自动解压原生文件。
+
+如需对已有官方版安装进行备份和恢复，仍可使用
+`.\packaging\community-install.ps1 -GameDir '<游戏目录>' -Jar '<上述 JAR>'`，
+恢复命令为 `.\packaging\community-install.ps1 -GameDir '<同上>' -Restore`。
 
 ## 维护
 

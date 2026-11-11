@@ -53,10 +53,13 @@ owns Minecraft: Java Edition. See
 
 `classes` depends on `setupRuntime`, which compiles the JNI bridge, fetches a
 missing runtime, and stages it, so even `test` needs the C++ toolchain.
-`build` leaves a lightweight JAR in `build/libs/`; `package` embeds
-the runtime and payload in `build/distributions/`. It verifies inclusion of
+`build` and `package` produce the same installable JAR in `build/libs/`,
+bundling Fabric API, the runtime, and its payload. `assemble` verifies inclusion of
 every `packaging/licenses/` file and excludes Python interpreter and binding
-payloads. Staged and packaged contents must agree with `NativeExtractor`.
+payloads. `jar` produces the development intermediate under `build/dev/`,
+where sources JARs also live. Development launchers use that intermediate with
+their staged SDK; `releaseArchive` optionally adds an installer ZIP under
+`build/distributions/`. Staged and packaged contents must agree with `NativeExtractor`.
 See [Getting Started](docs/GETTING_STARTED.md) and
 [`build.gradle`](build.gradle) for the staging inventory.
 

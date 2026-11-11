@@ -7,13 +7,13 @@ Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 
 # Playing
 
-This guide takes you from a downloaded archive to a path-traced world. It is
-written for players. You do not need development tools, and you do not need to
-install Java, Fabric, or the RTX Remix runtime yourself.
+This guide takes you from a downloaded JAR to a path-traced world. You need a
+Minecraft 26.2 instance with Java 25 and Fabric Loader. Fabric API, the RTX
+Remix runtime, and required resources are bundled in the mod JAR.
 
 This branch targets Minecraft 26.2 with ce.7 source parity. Its dedicated
 **Build Minecraft 26.2** Actions workflow compiles and packages Windows x64 builds;
-download the installer from a successful run's artifacts. That workflow excludes
+download the JAR from a successful run's artifacts. That workflow excludes
 tests, and game rendering remains unverified.
 
 ## What You Need
@@ -23,10 +23,11 @@ tests, and game rendering remains unverified.
 - A GeForce RTX 30-series or newer GPU with NVIDIA driver 616.92 or newer.
 - About 5 GB of free disk space while installing, for the downloaded archive,
   the game, Java, and the unpacked runtime. About 3 GB stays in use afterwards.
-- An internet connection while the installer runs.
+- An internet connection to download Minecraft, Fabric Loader, and the mod.
 - 16 GB of system memory is recommended.
 
-Java 25, Fabric, and the RTX Remix runtime are installed for you.
+Select Java 25 and install Fabric Loader 0.20.1 or newer through your launcher.
+The mod extracts its bundled runtime automatically on first launch.
 
 ## Before You Start
 
@@ -48,11 +49,39 @@ fixed.
 
 ## Download
 
-Download the release archive from the
+Download the JAR from the
 [Releases page](https://github.com/CuteEthanLeo/rtx-remix-minecraft-ce/releases),
-select a tag ending in `+mc26.2`, and extract it.
+selecting a tag ending in `+mc26.2` and a JAR for your Windows architecture.
+For branch builds, download the **Build Minecraft 26.2** Actions artifact
+and extract the JAR from GitHub's artifact ZIP.
 
-## Which Launcher
+## Install
+
+1. Create or select a Minecraft 26.2 instance in your launcher, using Java 25
+   and Fabric Loader 0.20.1 or newer.
+2. Copy the downloaded JAR into that instance's `mods` folder. Fabric API is
+   included, and the runtime and its textures unpack into the game folder on
+   first launch.
+3. Launch the Fabric instance.
+
+Optionally give the instance the JVM arguments listed as `RECOMMENDED_JVM_ARGS`
+in [`packaging/installer.ps1`](../packaging/installer.ps1): a 2 GB heap with G1GC.
+
+To update, close the game and replace the old mod JAR. To remove the mod,
+delete the JAR and its unpacked files, listed in
+[packaging/INSTALL.md](../packaging/INSTALL.md#uninstall).
+
+### Installing Without The Installer
+
+The steps above install the JAR directly. Installer Upgrade, Repair, and
+Uninstall commands apply only to instances created by the installer.
+
+## Optional Installer
+
+If you have an installer archive from an earlier release or a source build
+made with `releaseArchive`, it can set up Java, Fabric, and a launcher for you.
+
+### Which Launcher
 
 The installer asks which Minecraft launcher to use, unless it finds Prism and
 no Microsoft launcher, when it uses Prism without asking. Both work. The
@@ -73,7 +102,7 @@ same worlds as your normal play.
 Prism is the recommended choice. Either way, you sign in with the same
 Microsoft account.
 
-## Install
+### Installer Steps
 
 1. Extract the whole archive to a folder. Running the installer from inside the
    zip file does not work.
@@ -94,23 +123,6 @@ Microsoft account.
 5. Start the game. In Prism, select the **NVIDIA RTX Remix for Minecraft**
    instance and press Launch. In the Microsoft launcher, select the **NVIDIA
    RTX Remix for Minecraft** profile and press Play.
-
-### Installing Without The Installer
-
-If you already run a Fabric instance for Minecraft 26.2 in a launcher of
-your choice, you can install the mod by hand. The instance needs Java 25,
-Fabric Loader 0.20.1 or newer, and Fabric API 0.161.0+26.2 or newer.
-
-1. Copy the JAR from the archive's `mods\` folder into the instance's `mods\`
-   folder. It carries the runtime and its textures and unpacks them into the
-   game folder on first launch.
-2. Optionally give the instance the JVM arguments the installer would set:
-   a 2 GB heap with G1GC, listed as `RECOMMENDED_JVM_ARGS` in
-   [`packaging/installer.ps1`](../packaging/installer.ps1).
-
-Upgrade, Repair, and Uninstall do not know about a manual install. To update,
-replace the JAR. To remove the mod, delete the JAR and the files it unpacked,
-which [packaging/INSTALL.md](../packaging/INSTALL.md#uninstall) lists.
 
 ## First Launch
 
@@ -259,11 +271,12 @@ following:
 
 ## Updating
 
-Download the new release archive, extract it, and run `install.bat` again. It
-preselects Upgrade, which updates the launcher that already has the mod; choose
-Install to use the other launcher. Your worlds, settings, and any lighting
-profiles you have edited are kept, and profiles added by the new release are
-placed beside them.
+Close the game, download the new JAR for Minecraft 26.2 and your Windows
+architecture, and replace the old mod JAR in the instance's `mods` folder.
+The next launch updates the runtime. Your worlds, settings, and edited lighting
+profiles are kept, and profiles added by the new release are placed beside them.
+For an installer-managed instance and an installer archive, run `install.bat`
+and choose Upgrade instead.
 To restore a shipped profile's default, delete that profile file and relaunch.
 Missing shipped files under `rtx-remix\` and a missing `rtx.conf` return on
 the next launch even when `.rtx-remix-version` matches. Existing profiles,
@@ -274,8 +287,12 @@ but still preserves existing profiles.
 
 ## Uninstalling
 
-Run `install.bat` and choose Uninstall. It removes the mod files, such as the
-mod, Fabric API, the runtime, and `rtx.conf`, and then offers to remove the
+For a JAR installation, close the game and remove the mod JAR and the files it
+unpacked, following [the manual file list](../packaging/INSTALL.md#uninstall).
+
+For an installer-managed instance, run `install.bat` and choose Uninstall. It
+removes the mod files, such as the mod, Fabric API, the runtime, and `rtx.conf`,
+and then offers to remove the
 Java, the Prism portable, and the Prism instance it installed for you. Basic
 uninstall leaves your worlds alone, along with any lighting profiles you
 authored under `rtx-remix\`. The optional Prism instance or portable cleanup

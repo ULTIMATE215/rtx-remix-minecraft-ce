@@ -20,10 +20,10 @@ Modified by RTX Remix for Minecraft Community Edition; see COMMUNITY.md.
 > [Releases](https://github.com/CuteEthanLeo/rtx-remix-minecraft-ce/releases), tagged
 > `v<mod version>+mc<Minecraft version>`. Version-specific sources live on `mc/<version>` branches.
 > The 26.2 source aligns with 1.21.1 ce.7. The dedicated
-> [Build Minecraft 26.2 workflow](.github/workflows/build-26.2.yml) builds a Windows x64 installer
+> [Build Minecraft 26.2 workflow](.github/workflows/build-26.2.yml) builds an installable Windows x64 JAR
 > on pushes to `mc/26.2`; download it from the successful run's artifacts. Tests are excluded
 > from that workflow, and game rendering remains unverified.
-> 26.2 分支通过专用 Actions 工作流编译打包，安装包见成功运行的产物；本次不运行测试或游戏验证。
+> 26.2 分支的 Actions 产物为可直接放入 `mods` 的 JAR，内含 Fabric API、Remix 运行时和必要资源；该工作流不运行测试或游戏验证。
 
 
 This Fabric mod renders Minecraft Java Edition 26.2 through NVIDIA RTX Remix
@@ -56,16 +56,20 @@ We hope the community helps fill it out. If something breaks,
 
 ## Download
 
-Download the release archive from the
+Download the JAR from the
 [Releases page](https://github.com/CuteEthanLeo/rtx-remix-minecraft-ce/releases),
-choosing a tag ending in `+mc26.2`. For branch builds, use the installer artifact
-from the successful **Build Minecraft 26.2** Actions run.
+choosing a tag ending in `+mc26.2`. For branch builds, download the JAR artifact
+from the successful **Build Minecraft 26.2** Actions run and extract the JAR
+from GitHub's artifact ZIP.
 
 ## Install in three steps
 
-1. Extract the release archive.
-2. Double-click `install.bat` and follow the menu.
-3. Launch the **NVIDIA RTX Remix for Minecraft** profile from your launcher.
+1. Create a Minecraft 26.2 instance with Java 25 and Fabric Loader 0.20.1 or newer.
+2. Copy the downloaded JAR into that instance's `mods` folder.
+3. Launch the Fabric instance. The first launch extracts the bundled Remix runtime and resources.
+
+Fabric API is included; no separate runtime download or installer is needed.
+这是 Minecraft 模组 JAR，放入对应 Fabric 实例的 `mods` 目录即可使用。
 
 The step-by-step version, with launcher advice and troubleshooting, is in
 [Playing](docs/PLAYING.md).
@@ -76,14 +80,19 @@ The step-by-step version, with launcher advice and troubleshooting, is in
 - Minecraft Java Edition 26.2, on a Microsoft account that owns the game.
 - A GeForce RTX 30-series or newer GPU with NVIDIA driver 616.92 or newer.
 - About 5 GB of free disk space while installing; about 3 GB stays in use.
-- An internet connection while the installer runs.
+- An internet connection to download Minecraft, Fabric Loader, and the mod.
 - 16 GB of system memory is recommended.
 
-Java 25, Fabric, and the RTX Remix runtime are installed for you.
+The JAR bundles Fabric API and the RTX Remix runtime. Select Java 25 and
+install Fabric Loader through your launcher.
 
 Building and running from source has its own
 [prerequisites](docs/GETTING_STARTED.md#prerequisites), including Prism
 Launcher, signed in to a Microsoft account that owns Minecraft: Java Edition.
+
+On Windows with the build prerequisites installed, run
+`.\gradlew.bat build -Parch=win64`. The installable JAR is in `build/libs/`.
+Omit `-Parch` to bundle both Windows x64 and ARM64 in one JAR.
 
 ## Crash Reports And Privacy
 
